@@ -1,0 +1,156 @@
+:root {
+  font-family: "Avenir Next", "Futura", "Trebuchet MS", sans-serif;
+  color: #f7f0dd;
+  background: #050505;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: #050505;
+}
+
+body {
+  overflow: hidden;
+}
+
+.player-shell {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+}
+
+.player-video-fullscreen {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.player-status-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.68));
+}
+
+.player-status-card {
+  max-width: 32rem;
+  padding: 28px 32px;
+  border-radius: 28px;
+  text-align: center;
+  background: rgba(10, 10, 10, 0.72);
+  border: 1px solid rgba(247, 240, 221, 0.14);
+  backdrop-filter: blur(18px);
+}
+
+.player-status-kicker,
+.splash-kicker {
+  display: inline-block;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  font-size: 0.76rem;
+  color: rgba(247, 240, 221, 0.68);
+}
+
+.player-status-card h1,
+.splash-card h1 {
+  margin: 12px 0 14px;
+  font-size: clamp(2.6rem, 7vw, 5.8rem);
+  line-height: 0.95;
+}
+
+.player-status-card p,
+.splash-card p {
+  margin: 0;
+  color: rgba(247, 240, 221, 0.84);
+  font-size: 1.02rem;
+  line-height: 1.6;
+}
+
+.splash-screen {
+  position: relative;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top, rgba(255, 143, 77, 0.28), transparent 36%),
+    linear-gradient(135deg, #1b120d 0%, #4d2b1f 45%, #090807 100%);
+}
+
+.splash-orb {
+  position: absolute;
+  width: min(52vw, 720px);
+  aspect-ratio: 1;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255, 214, 150, 0.92), rgba(255, 163, 92, 0.85) 30%, rgba(157, 60, 21, 0.72) 58%, rgba(15, 6, 4, 0) 74%);
+  filter: blur(8px);
+  opacity: 0.88;
+  transform: translateY(-12%);
+}
+
+.splash-card {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 46rem);
+  padding: 40px;
+  border-radius: 32px;
+  text-align: center;
+  background: rgba(8, 7, 7, 0.38);
+  border: 1px solid rgba(247, 240, 221, 0.12);
+  backdrop-filter: blur(18px);
+}
+
+.splash-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+  padding: 14px 20px;
+  border-radius: 999px;
+  background: rgba(10, 10, 10, 0.5);
+  border: 1px solid rgba(247, 240, 221, 0.1);
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #ff6a3d;
+  box-shadow: 0 0 18px rgba(255, 106, 61, 0.7);
+}
+
+.splash-status[data-connected="true"] .status-dot {
+  background: #7fe38e;
+  box-shadow: 0 0 18px rgba(127, 227, 142, 0.7);
+}
+
+@media (max-width: 960px) {
+  .player-status-card,
+  .splash-card {
+    padding: 28px 24px;
+  }
+
+  .player-status-overlay,
+  .splash-screen {
+    padding: 20px;
+  }
+
+  .splash-orb {
+    width: min(88vw, 560px);
+  }
+}

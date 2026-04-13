@@ -1,0 +1,4 @@
+interface:
+  display_name: "ClawTV Control"
+  short_description: "Control ClawTV playback with the repo CLI"
+  default_prompt: "Use $clawtv-control to check ClawTV status or control what is playing on TV."

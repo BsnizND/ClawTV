@@ -1,0 +1,19 @@
+{
+  "name": "clawtv",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.28.1",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm build && pnpm --filter @clawtv/web typecheck",
+    "dev:server": "pnpm --filter @clawtv/server dev",
+    "dev:web": "pnpm --filter @clawtv/web dev",
+    "dev:cli": "pnpm --filter @clawtv/cli dev",
+    "install:runtime": "bash scripts/runtime/install_runtime.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

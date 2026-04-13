@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ClawTV</string>
+    <string name="status_loading_title">Connecting To ClawTV</string>
+    <string name="status_loading_message">Connecting to the ClawTV server and waiting for playback state.</string>
+    <string name="status_idle_title">Receiver Ready</string>
+    <string name="status_idle_message">Waiting for the server queue to assign the next item.</string>
+    <string name="status_buffering_title">Buffering</string>
+    <string name="status_buffering_message">ClawTV is attaching the current stream.</string>
+    <string name="status_paused_title">Paused</string>
+    <string name="status_paused_message">Playback is paused on the server.</string>
+    <string name="status_finished_title">Finished</string>
+    <string name="status_finished_message">Waiting for the next queued item.</string>
+    <string name="status_error_title">Receiver Needs Attention</string>
+    <string name="status_error_message">The Android TV app could not reach the server or attach the current stream.</string>
+    <string name="status_restoring_title">Restoring Session</string>
+    <string name="status_restoring_message">Bringing the receiver back after the app was paused or resumed.</string>
+</resources>

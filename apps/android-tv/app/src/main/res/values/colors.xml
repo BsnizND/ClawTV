@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="clawtv_black">#050505</color>
+    <color name="clawtv_orange">#FF6F3D</color>
+    <color name="clawtv_orange_deep">#5A2415</color>
+    <color name="clawtv_text_primary">#F7F0DD</color>
+    <color name="clawtv_text_secondary">#D8CCB1</color>
+    <color name="clawtv_card">#CC0E0C0C</color>
+</resources>

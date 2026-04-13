@@ -1,0 +1,16 @@
+.DS_Store
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+.env
+.env.*
+data/
+packages/*/src/*.d.ts
+packages/*/src/*.js
+apps/android-tv/.gradle/
+apps/android-tv/local.properties
+apps/android-tv/**/build/
+__pycache__/
+*.pyc

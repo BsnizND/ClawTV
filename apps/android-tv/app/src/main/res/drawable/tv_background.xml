@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/clawtv_black" />
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="315"
+                android:centerColor="#3A1D14"
+                android:endColor="#050505"
+                android:startColor="#1A120D" />
+        </shape>
+    </item>
+    <item
+        android:gravity="top|center_horizontal"
+        android:top="-180dp">
+        <shape android:shape="oval">
+            <size
+                android:width="880dp"
+                android:height="880dp" />
+            <gradient
+                android:centerColor="#88FF8C54"
+                android:endColor="#00FF8C54"
+                android:gradientRadius="440dp"
+                android:startColor="#CCFFE0B7"
+                android:type="radial" />
+        </shape>
+    </item>
+</layer-list>
