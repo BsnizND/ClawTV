@@ -9,8 +9,15 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
-DEFAULT_SERVER_ORIGIN = "http://localhost:8787/ClawTV/"
+DEFAULT_SERVER_ORIGINS = [
+    "http://127.0.0.1:4390/ClawTV/",
+    "http://localhost:4390/ClawTV/",
+    "http://127.0.0.1:8787/ClawTV/",
+    "http://localhost:8787/ClawTV/",
+]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--server-origin",
-        help="ClawTV server origin. Defaults to CLAWTV_SERVER_ORIGIN or http://localhost:8787/ClawTV/.",
+        help="ClawTV server origin. Defaults to CLAWTV_SERVER_ORIGIN or auto-detection of a local ClawTV runtime.",
     )
     parser.add_argument(
         "command",
@@ -74,9 +81,7 @@ def main() -> int:
         raise SystemExit("pnpm is required but was not found on PATH.")
 
     repo_root = resolve_repo_root(args.repo_root)
-    server_origin = args.server_origin or os.environ.get(
-        "CLAWTV_SERVER_ORIGIN", DEFAULT_SERVER_ORIGIN
-    )
+    server_origin = resolve_server_origin(args.server_origin)
 
     command = [
         pnpm_path,
@@ -94,6 +99,37 @@ def main() -> int:
 
     completed = subprocess.run(command, cwd=repo_root, env=env)
     return completed.returncode
+
+
+def resolve_server_origin(explicit_value: str | None) -> str:
+    if explicit_value:
+        return explicit_value
+
+    env_value = os.environ.get("CLAWTV_SERVER_ORIGIN")
+    if env_value:
+        return env_value
+
+    for candidate in DEFAULT_SERVER_ORIGINS:
+        if is_healthy_origin(candidate):
+            return candidate
+
+    formatted = "\n".join(f"- {candidate}" for candidate in DEFAULT_SERVER_ORIGINS)
+    raise SystemExit(
+        "Could not detect a running ClawTV server.\n"
+        "Checked:\n"
+        f"{formatted}\n"
+        "Set CLAWTV_SERVER_ORIGIN or pass --server-origin."
+    )
+
+
+def is_healthy_origin(origin: str) -> bool:
+    health_url = f"{origin.rstrip('/')}/health"
+
+    try:
+        with urlopen(health_url, timeout=1.0) as response:
+            return 200 <= response.status < 300
+    except URLError:
+        return False
 
 
 if __name__ == "__main__":

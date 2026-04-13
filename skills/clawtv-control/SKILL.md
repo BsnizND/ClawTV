@@ -117,7 +117,8 @@ python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py seek --to 12:34
 
 The wrapper script defaults to:
 - the repo checkout that contains the script itself
-- `CLAWTV_SERVER_ORIGIN=http://localhost:8787/ClawTV/` when no override is provided
+- `CLAWTV_SERVER_ORIGIN` when it is set
+- otherwise, auto-detection of a local ClawTV runtime, preferring the deployed port before the dev port
 
 Override them when needed:
 - `CLAWTV_REPO_ROOT`
