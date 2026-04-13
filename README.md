@@ -1,51 +1,46 @@
 # ClawTV
 
-ClawTV is a self-hosted TV playback system for turning a media library into a curated channel.
+ClawTV is a self-hosted, agent-friendly TV playback system for Android TV devices such as NVIDIA Shield.
 
-The project is built around one simple idea: the screen should stay thin, while scheduling, queueing, and transport control live in a server and CLI that can also be driven by an agent.
+It is built for a very specific kind of experience: you should be able to turn on the TV, land in a simple fullscreen receiver, and ask a person, script, or agent to put something on without digging through app menus. That makes it interesting not just as a home theater tool, but as an accessibility project for low-vision and low-friction viewing.
 
-## Why This Exists
+## Why This Is Interesting
 
-Most TV and streaming interfaces are optimized for browsing, menus, and manual choice. ClawTV explores a different model:
+Most TV software assumes the viewer will browse visually, manage apps, and make choices with a remote. ClawTV explores the opposite model:
 
-- the display acts like a receiver, not a dashboard
-- playback state is owned by the server
-- a human or agent can decide what should play next
-- the result should feel closer to a channel than an app launcher
+- the TV screen stays simple
+- playback state lives on the server
+- control happens through a CLI or agent layer
+- the receiver behaves more like a channel endpoint than a content browser
 
-The long-term goal is a system that works well for ambient playback, low-friction living room use, and accessibility-oriented control surfaces.
+That makes the project useful for:
 
-## What The Repo Contains
+- low-vision viewing where menu-heavy UIs are a bad fit
+- ambient or curated playback
+- agent-driven control of a personal media library
+- Android TV / Shield setups where you want a thin receiver instead of another giant app
 
-- `apps/server`: HTTP control plane and playback authority
-- `apps/web`: fullscreen receiver client
-- `apps/android-tv`: thin native Android TV receiver
-- `apps/cli`: operator and automation command surface
-- `packages/contracts`: shared API and state types
-- `packages/core`: shared helpers
-- `packages/db`: SQLite-backed state and catalog queries
-- `packages/plex-sync`: Plex metadata ingestion
-- `skills/clawtv-control`: installable OpenClaw skill for ClawTV control
+## What It Does
 
-## Current Model
+ClawTV combines four pieces:
 
-ClawTV follows a deliberate split:
+- a server that owns queue, playback state, session state, and media resolution
+- a thin fullscreen receiver for web and Android TV
+- a CLI for human and automation control
+- an installable OpenClaw skill that wraps the CLI
 
-- the server owns queue, playback state, playback position, and catalog-backed resolution
-- the receiver only plays the assigned item and reports local state
-- the CLI is the stable control surface for humans, scripts, and agent skills
+Today it supports:
 
-That keeps the playback system debuggable and avoids putting business logic in the client.
-
-## Current Capabilities
-
-- SQLite-backed session, queue, and playback state
-- Plex-backed catalog sync for shows, episodes, movies, and collections
+- Plex-backed catalog sync
 - server-proxied HLS playback
-- transport controls: `pause`, `resume`, `seek`, `next`, `stop`, `refresh`
-- catalog browse/query commands: `search`, `list-shows`, `list-collections`, `recently-added`
-- a thin Android TV receiver using native `Media3` playback
-- an OpenClaw skill that wraps the CLI
+- playback state persistence
+- transport controls like pause, resume, seek, next, stop, and refresh
+- catalog browsing with `search`, `list-shows`, `list-collections`, and `recently-added`
+- a native Android TV receiver using `Media3`
+
+## Architecture In One Sentence
+
+ClawTV is an agentic control layer for watching movies and TV on Android TV: the server decides what is on, and the receiver just plays it.
 
 ## Quick Start
 
@@ -87,11 +82,11 @@ pnpm --filter @clawtv/cli dev stop
 
 The repo ships an installable skill under `skills/clawtv-control`.
 
-It wraps the CLI so an OpenClaw agent can:
+That skill gives an OpenClaw agent a stable way to:
 
 - inspect current playback and server status
 - browse the synced library
-- search for titles or series
+- search titles or series
 - play, shuffle, pause, resume, seek, skip, refresh, and stop
 
 ## Android TV
@@ -100,11 +95,9 @@ The Android TV app under `apps/android-tv` is intentionally thin:
 
 - it polls the ClawTV server for playback state
 - it plays the assigned HLS stream with native `Media3`
-- it stays focused on receiver behavior rather than library browsing or control logic
+- it does not own queue logic or library browsing
 
 ## Docs
 
-- [Product Spec](docs/product-spec.md)
 - [Technical Architecture](docs/technical-architecture.md)
 - [Deployment Notes](docs/deployment.md)
-- [Android TV App Plan](docs/android-tv-app-plan.md)
