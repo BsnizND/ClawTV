@@ -4,6 +4,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
+import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
@@ -165,16 +167,113 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (!isTransportKey(event.keyCode)) {
+            return super.dispatchKeyEvent(event)
+        }
+
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            handleTransportKey(event.keyCode)
+        }
+
+        return true
+    }
+
     private fun pollPlaybackSnapshot() {
         worker.execute {
-            val snapshot = runCatching {
+            val result = runCatching {
                 val response = requestJson("api/playback/current")
                 parsePlaybackSnapshot(response)
-            }.getOrNull()
+            }
 
-            if (destroyed || snapshot == null) {
+            if (destroyed) {
                 return@execute
             }
+
+            result.onFailure { error ->
+                Log.e(TAG, "Failed to fetch playback snapshot from ${BuildConfig.CLAWTV_RECEIVER_URL}", error)
+                val errorMessage = error.localizedMessage ?: error.javaClass.simpleName
+                runOnUiThread {
+                    showOverlay(
+                        title = getString(R.string.status_loading_title),
+                        message = "Unable to reach ClawTV at ${BuildConfig.CLAWTV_RECEIVER_URL}\n$errorMessage",
+                        visible = true
+                    )
+                }
+            }
+
+            val snapshot = result.getOrNull() ?: return@execute
+
+            runOnUiThread {
+                applySnapshot(snapshot)
+            }
+        }
+    }
+
+    private fun isTransportKey(keyCode: Int): Boolean {
+        return keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+            || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY
+            || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE
+            || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD
+            || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND
+            || keyCode == KeyEvent.KEYCODE_MEDIA_NEXT
+            || keyCode == KeyEvent.KEYCODE_MEDIA_STOP
+            || keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+            || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+    }
+
+    private fun handleTransportKey(keyCode: Int) {
+        when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                val commandName = if (currentSnapshot?.playbackState == "playing" || currentSnapshot?.playbackState == "loading") {
+                    "pause"
+                } else {
+                    "resume"
+                }
+                sendCommand(commandName)
+            }
+
+            KeyEvent.KEYCODE_MEDIA_PLAY -> sendCommand("resume")
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> sendCommand("pause")
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+            KeyEvent.KEYCODE_DPAD_RIGHT -> sendCommand("seek", JSONObject().apply {
+                put("deltaMs", SEEK_FORWARD_MS)
+            })
+
+            KeyEvent.KEYCODE_MEDIA_REWIND,
+            KeyEvent.KEYCODE_DPAD_LEFT -> sendCommand("seek", JSONObject().apply {
+                put("deltaMs", -SEEK_BACK_MS)
+            })
+
+            KeyEvent.KEYCODE_MEDIA_NEXT -> sendCommand("next")
+            KeyEvent.KEYCODE_MEDIA_STOP -> sendCommand("stop")
+        }
+    }
+
+    private fun sendCommand(commandName: String, body: JSONObject = JSONObject()) {
+        worker.execute {
+            val result = runCatching {
+                postJson("api/commands/$commandName", body)
+                parsePlaybackSnapshot(requestJson("api/playback/current"))
+            }
+
+            if (destroyed) {
+                return@execute
+            }
+
+            result.onFailure { error ->
+                Log.e(TAG, "Failed to send command $commandName", error)
+                val errorMessage = error.localizedMessage ?: error.javaClass.simpleName
+                runOnUiThread {
+                    showOverlay(
+                        title = getString(R.string.status_error_title),
+                        message = "Command failed: $commandName\n$errorMessage",
+                        visible = true
+                    )
+                }
+            }
+
+            val snapshot = result.getOrNull() ?: return@execute
 
             runOnUiThread {
                 applySnapshot(snapshot)
@@ -384,9 +483,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val TAG = "ClawTvMainActivity"
         private const val POLL_INTERVAL_MS = 2_000L
         private const val POSITION_SYNC_INTERVAL_MS = 5_000L
         private const val RESYNC_DRIFT_MS = 5_000L
+        private const val SEEK_BACK_MS = 10_000
+        private const val SEEK_FORWARD_MS = 30_000
     }
 }
 
