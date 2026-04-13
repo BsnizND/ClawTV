@@ -2,7 +2,7 @@
 
 ClawTV is a self-hosted, agent-first TV playback system for Android TV devices such as NVIDIA Shield.
 
-It is built for a very specific kind of experience: you should be able to turn on the TV, land in a simple fullscreen receiver, and use an agentic control layer to put something on without digging through app menus. That makes it interesting not just as a home theater tool, but as an accessibility project for low-vision viewers and low-friction viewing.
+It is built for a very specific kind of experience: you should be able to turn on the TV, land in a simple fullscreen receiver, and use an agentic control layer to put something on without digging through app menus. That makes it interesting not just as a home theater tool, but as an accessibility project for low-vision people, seniors, and anyone who wants less menu hunting between intent and playback.
 
 ## Why This Is Interesting
 
