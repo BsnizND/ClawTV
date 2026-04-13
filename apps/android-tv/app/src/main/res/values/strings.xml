@@ -15,4 +15,19 @@
     <string name="status_error_message">The Android TV app could not reach the server or attach the current stream.</string>
     <string name="status_restoring_title">Restoring Session</string>
     <string name="status_restoring_message">Bringing the receiver back after the app was paused or resumed.</string>
+    <string name="voice_brand">Kay Voice</string>
+    <string name="voice_title_idle">Kay Voice</string>
+    <string name="voice_message_idle">Press the mic button to talk with Kay.</string>
+    <string name="voice_title_waking">Kay Is Waking Up</string>
+    <string name="voice_message_waking">Pausing playback and getting ready to listen.</string>
+    <string name="voice_title_listening">Listening</string>
+    <string name="voice_message_listening">Speak naturally. Kay will hear the first pass locally on the Shield.</string>
+    <string name="voice_title_processing">Got It</string>
+    <string name="voice_message_processing">Pass 1 captured your voice and will hand the transcript to Kay next.</string>
+    <string name="voice_title_error">Voice Needs Attention</string>
+    <string name="voice_message_permission">ClawTV needs microphone permission before Kay can listen.</string>
+    <string name="voice_message_unavailable">Speech recognition is not available on this Android TV device yet.</string>
+    <string name="voice_message_tts_unavailable">Voice greeting is not ready yet, but ClawTV can still listen.</string>
+    <string name="voice_transcript_prefix">Heard:</string>
+    <string name="voice_hint">Back cancels. Playback resumes automatically after this first-pass capture.</string>
 </resources>
