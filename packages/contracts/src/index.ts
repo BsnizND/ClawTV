@@ -12,6 +12,7 @@ export type ReceiverCommandType = "refresh";
 export type VoiceReplyMode = "client-tts" | "server-audio" | "none";
 export type VoiceSttMode = "shield" | "server";
 export type VoiceBackendMode = "mock" | "openclaw";
+export type RecommendationStrategy = "default" | "random" | "highly-rated";
 
 export interface SessionSummary {
   id: string;
@@ -51,6 +52,14 @@ export interface MediaItemSummary {
   showTitle: string | null;
   year: number | null;
   originallyAvailableAt: string | null;
+  seasonNumber?: number | null;
+  episodeNumber?: number | null;
+  viewCount?: number | null;
+  lastViewedAt?: string | null;
+  viewOffsetMs?: number | null;
+  userRating?: number | null;
+  audienceRating?: number | null;
+  criticRating?: number | null;
 }
 
 export interface PlaybackMediaItem extends MediaItemSummary {
@@ -162,6 +171,17 @@ export interface CatalogRecentResponse {
   items: MediaItemSummary[];
 }
 
+export interface EpisodeRecommendation {
+  item: MediaItemSummary;
+  reason: string;
+}
+
+export interface CatalogRecommendationResponse {
+  show: string;
+  strategy: RecommendationStrategy;
+  items: EpisodeRecommendation[];
+}
+
 export interface SyncRunSummary {
   id: string;
   mode: SyncMode;
@@ -182,6 +202,7 @@ export interface PlaybackStateUpdateRequest {
   state?: ClientPlaybackState;
   positionMs?: number;
   sessionId?: string;
+  currentItemId?: string | null;
 }
 
 export interface SeekCommandRequest {
@@ -236,6 +257,7 @@ export interface VoiceTurnResponse {
   replyAudioUrl: string | null;
   sttMode: VoiceSttMode;
   replyMode: VoiceReplyMode;
+  expectsReply: boolean;
   resumePlayback: boolean;
   action: CommandName | "none";
   playback: PlaybackSnapshot;

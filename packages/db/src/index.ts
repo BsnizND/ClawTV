@@ -7,6 +7,7 @@ import type {
   CatalogCollectionListResponse,
   CatalogCollectionSummary,
   CatalogMediaTypeFilter,
+  CatalogRecommendationResponse,
   CatalogRecentResponse,
   CatalogSearchResponse,
   CatalogShowListResponse,
@@ -14,9 +15,11 @@ import type {
   ClientPlaybackState,
   CommandName,
   CommandResult,
+  EpisodeRecommendation,
   MediaItemSummary,
   PlaybackMediaItem,
   PlaybackSnapshot,
+  RecommendationStrategy,
   ServerStatus,
   SessionSummary,
   SyncMode,
@@ -53,6 +56,12 @@ export interface CatalogMediaItemRecord {
   thumbUrl: string | null;
   addedAt: string | null;
   updatedAt: string;
+  viewCount: number | null;
+  lastViewedAt: string | null;
+  viewOffsetMs: number | null;
+  userRating: number | null;
+  audienceRating: number | null;
+  criticRating: number | null;
   showId: string | null;
   seasonId: string | null;
   seasonNumber: number | null;
@@ -120,6 +129,12 @@ interface MediaRow {
   duration_ms?: number | null;
   poster_url?: string | null;
   thumb_url?: string | null;
+  view_count?: number | null;
+  last_viewed_at?: string | null;
+  view_offset_ms?: number | null;
+  user_rating?: number | null;
+  audience_rating?: number | null;
+  critic_rating?: number | null;
   season_number?: number | null;
   episode_number?: number | null;
   air_date?: string | null;
@@ -161,6 +176,12 @@ interface PlaybackSnapshotRow {
   duration_ms: number | null;
   poster_url: string | null;
   thumb_url: string | null;
+  view_count: number | null;
+  last_viewed_at: string | null;
+  view_offset_ms: number | null;
+  user_rating: number | null;
+  audience_rating: number | null;
+  critic_rating: number | null;
   season_number: number | null;
   episode_number: number | null;
   air_date: string | null;
@@ -182,6 +203,11 @@ interface CollectionSummaryRow {
   id: string;
   title: string;
   item_count: number;
+}
+
+interface ResolvedShowRow {
+  id: string;
+  title: string;
 }
 
 export function createDatabasePaths(rootDir: string, dataDir?: string): DatabasePaths {
@@ -366,6 +392,12 @@ export class ClawTvDatabase {
         mi.duration_ms,
         mi.poster_url,
         mi.thumb_url,
+        mi.view_count,
+        mi.last_viewed_at,
+        mi.view_offset_ms,
+        mi.user_rating,
+        mi.audience_rating,
+        mi.critic_rating,
         COALESCE(episode_season.season_number, season.season_number) AS season_number,
         e.episode_number,
         e.air_date,
@@ -472,6 +504,12 @@ export class ClawTvDatabase {
             durationMs: row.duration_ms,
             posterUrl: row.poster_url,
             thumbUrl: row.thumb_url,
+            viewCount: row.view_count,
+            lastViewedAt: row.last_viewed_at,
+            viewOffsetMs: row.view_offset_ms,
+            userRating: row.user_rating,
+            audienceRating: row.audience_rating,
+            criticRating: row.critic_rating,
             seasonNumber: row.season_number,
             episodeNumber: row.episode_number,
             airDate: row.air_date
@@ -516,7 +554,13 @@ export class ClawTvDatabase {
         mi.media_type,
         show_mi.title AS show_title,
         mi.year,
-        mi.originally_available_at
+        mi.originally_available_at,
+        mi.view_count,
+        mi.last_viewed_at,
+        mi.view_offset_ms,
+        mi.user_rating,
+        mi.audience_rating,
+        mi.critic_rating
       FROM media_items mi
       LEFT JOIN episodes e ON e.media_item_id = mi.id
       LEFT JOIN media_items show_mi ON show_mi.id = e.show_id
@@ -608,7 +652,13 @@ export class ClawTvDatabase {
         mi.media_type,
         show_mi.title AS show_title,
         mi.year,
-        mi.originally_available_at
+        mi.originally_available_at,
+        mi.view_count,
+        mi.last_viewed_at,
+        mi.view_offset_ms,
+        mi.user_rating,
+        mi.audience_rating,
+        mi.critic_rating
       FROM media_items mi
       LEFT JOIN episodes e ON e.media_item_id = mi.id
       LEFT JOIN media_items show_mi ON show_mi.id = e.show_id
@@ -628,17 +678,124 @@ export class ClawTvDatabase {
     };
   }
 
+  recommendEpisodes(input: {
+    show: string;
+    strategy?: RecommendationStrategy;
+    limit?: number;
+    unwatchedOnly?: boolean;
+  }): CatalogRecommendationResponse {
+    const show = input.show.trim();
+    const strategy = input.strategy ?? "default";
+
+    if (!show) {
+      return {
+        show,
+        strategy,
+        items: []
+      };
+    }
+
+    const resolvedShow = this.resolveShow(show);
+    if (!resolvedShow) {
+      return {
+        show,
+        strategy,
+        items: []
+      };
+    }
+
+    const limit = clampCatalogLimit(input.limit ?? 3);
+    const unwatchedOnly = Boolean(input.unwatchedOnly);
+    const recentCutoff = new Date(Date.now() - 1000 * 60 * 60 * 24 * 120).toISOString();
+    const rows = this.db.prepare(`
+      SELECT
+        episode_mi.id,
+        episode_mi.title,
+        episode_mi.media_type,
+        show_mi.title AS show_title,
+        episode_mi.year,
+        episode_mi.originally_available_at,
+        episode_mi.view_count,
+        episode_mi.last_viewed_at,
+        episode_mi.view_offset_ms,
+        episode_mi.user_rating,
+        episode_mi.audience_rating,
+        episode_mi.critic_rating,
+        season.season_number,
+        e.episode_number,
+        e.air_date
+      FROM episodes e
+      JOIN media_items episode_mi ON episode_mi.id = e.media_item_id
+      JOIN media_items show_mi ON show_mi.id = e.show_id
+      LEFT JOIN seasons season ON season.media_item_id = e.season_id
+      WHERE e.show_id = :showId
+        AND (:unwatchedOnly = 0 OR COALESCE(episode_mi.view_count, 0) = 0)
+      ORDER BY season.season_number ASC, e.episode_number ASC, episode_mi.title ASC
+    `).all({
+      showId: resolvedShow.id,
+      unwatchedOnly: unwatchedOnly ? 1 : 0
+    }) as unknown as MediaRow[];
+
+    const rankedRows = rows
+      .map((row) => ({
+        row,
+        score: scoreRecommendationRow(row, {
+          strategy,
+          recentCutoff
+        }),
+        tieBreaker: strategy === "random" ? Math.random() : 0
+      }))
+      .sort((left, right) => {
+        if (left.score !== right.score) {
+          return right.score - left.score;
+        }
+
+        if (strategy === "random" && left.tieBreaker !== right.tieBreaker) {
+          return left.tieBreaker - right.tieBreaker;
+        }
+
+        return compareRecommendationRows(left.row, right.row);
+      })
+      .slice(0, limit)
+      .map((entry) => entry.row);
+
+    return {
+      show: resolvedShow.title,
+      strategy,
+      items: rankedRows.map((row) => ({
+        item: mapMediaRow(row),
+        reason: buildRecommendationReason(row, strategy)
+      }))
+    };
+  }
+
   setClientPlaybackState(
     state: ClientPlaybackState | undefined,
     options?: {
       sessionId?: string | null;
       positionMs?: number | null;
+      currentItemId?: string | null;
     }
   ): PlaybackSnapshot {
     const session = this.getTargetSession(options?.sessionId);
 
     if (!session) {
       return this.getPlaybackSnapshot(null);
+    }
+
+    const snapshot = this.getPlaybackSnapshot(session.id);
+    const activeItemId = snapshot.currentItem?.id ?? null;
+    if (options?.currentItemId !== undefined && options.currentItemId !== activeItemId) {
+      this.db.prepare(`
+        UPDATE sessions
+        SET last_seen_at = :lastSeenAt
+        WHERE id = :sessionId
+      `).run({
+        sessionId: session.id,
+        lastSeenAt: new Date().toISOString()
+      });
+
+      return snapshot;
     }
 
     const now = new Date().toISOString();
@@ -1109,7 +1266,13 @@ export class ClawTvDatabase {
           poster_url,
           thumb_url,
           added_at,
-          updated_at
+          updated_at,
+          view_count,
+          last_viewed_at,
+          view_offset_ms,
+          user_rating,
+          audience_rating,
+          critic_rating
         ) VALUES (
           :id,
           :plexRatingKey,
@@ -1124,7 +1287,13 @@ export class ClawTvDatabase {
           :posterUrl,
           :thumbUrl,
           :addedAt,
-          :updatedAt
+          :updatedAt,
+          :viewCount,
+          :lastViewedAt,
+          :viewOffsetMs,
+          :userRating,
+          :audienceRating,
+          :criticRating
         )
         ON CONFLICT(id) DO UPDATE SET
           plex_rating_key = excluded.plex_rating_key,
@@ -1139,7 +1308,13 @@ export class ClawTvDatabase {
           poster_url = excluded.poster_url,
           thumb_url = excluded.thumb_url,
           added_at = excluded.added_at,
-          updated_at = excluded.updated_at
+          updated_at = excluded.updated_at,
+          view_count = excluded.view_count,
+          last_viewed_at = excluded.last_viewed_at,
+          view_offset_ms = excluded.view_offset_ms,
+          user_rating = excluded.user_rating,
+          audience_rating = excluded.audience_rating,
+          critic_rating = excluded.critic_rating
       `);
       const upsertShow = this.db.prepare(`
         INSERT INTO shows (media_item_id)
@@ -1207,7 +1382,13 @@ export class ClawTvDatabase {
           posterUrl: item.posterUrl,
           thumbUrl: item.thumbUrl,
           addedAt: item.addedAt,
-          updatedAt: item.updatedAt
+          updatedAt: item.updatedAt,
+          viewCount: item.viewCount,
+          lastViewedAt: item.lastViewedAt,
+          viewOffsetMs: item.viewOffsetMs,
+          userRating: item.userRating,
+          audienceRating: item.audienceRating,
+          criticRating: item.criticRating
         });
 
         if (item.mediaType === "show") {
@@ -1606,7 +1787,12 @@ export class ClawTvDatabase {
 
   private resolveMediaItems(commandName: CommandName, payload: Record<string, unknown>): MediaItemSummary[] {
     if (commandName === "play") {
+      const mediaItemId = String(payload.mediaItemId ?? "").trim();
       const title = String(payload.title ?? "").trim();
+
+      if (mediaItemId) {
+        return this.lookupMediaItemsByIds([mediaItemId]);
+      }
 
       if (!title) {
         return [];
@@ -1629,7 +1815,7 @@ export class ClawTvDatabase {
       `).all({ title }) as unknown as MediaRow[];
 
       if (exactMatches.length > 0) {
-        return exactMatches.map(mapMediaRow);
+        return this.expandPlayableMatches(exactMatches.map(mapMediaRow));
       }
 
       const fuzzyMatches = this.db.prepare(`
@@ -1642,7 +1828,7 @@ export class ClawTvDatabase {
         LIMIT 5
       `).all({ titlePattern: `%${title}%` }) as unknown as MediaRow[];
 
-      return fuzzyMatches.map(mapMediaRow);
+      return this.expandPlayableMatches(fuzzyMatches.map(mapMediaRow));
     }
 
     if (commandName === "play-latest") {
@@ -1681,6 +1867,10 @@ export class ClawTvDatabase {
     if (commandName === "shuffle") {
       const show = String(payload.show ?? "").trim();
       const collection = String(payload.collection ?? "").trim();
+      const highlyRated = parseBooleanPayload(payload.highlyRated);
+      const unwatchedOnly = parseBooleanPayload(payload.unwatchedOnly);
+      const limit = clampShuffleLimit(parseFiniteNumber(payload.limit) ?? null);
+      const recentCutoff = new Date(Date.now() - 1000 * 60 * 60 * 24 * 120).toISOString();
 
       if (show) {
         const matches = this.db.prepare(`
@@ -1690,20 +1880,36 @@ export class ClawTvDatabase {
             episode_mi.media_type,
             show_mi.title AS show_title,
             episode_mi.year,
-            episode_mi.originally_available_at
+            episode_mi.originally_available_at,
+            episode_mi.view_count,
+            episode_mi.last_viewed_at,
+            episode_mi.view_offset_ms,
+            episode_mi.user_rating,
+            episode_mi.audience_rating,
+            episode_mi.critic_rating
           FROM episodes e
           JOIN media_items episode_mi ON episode_mi.id = e.media_item_id
           JOIN media_items show_mi ON show_mi.id = e.show_id
           WHERE lower(show_mi.title) = lower(:show)
              OR lower(show_mi.title) LIKE lower(:showPattern)
+            AND (:unwatchedOnly = 0 OR COALESCE(episode_mi.view_count, 0) = 0)
           ORDER BY RANDOM()
-          LIMIT 12
+          LIMIT :limit
         `).all({
           show,
-          showPattern: `%${show}%`
+          showPattern: `%${show}%`,
+          unwatchedOnly: unwatchedOnly ? 1 : 0,
+          limit
         }) as unknown as MediaRow[];
 
-        return matches.map(mapMediaRow);
+        const curatedMatches = matches
+          .sort((left, right) => compareShuffleRows(left, right, {
+            highlyRated,
+            recentCutoff
+          }))
+          .slice(0, limit);
+
+        return curatedMatches.map(mapMediaRow);
       }
 
       if (collection) {
@@ -1736,6 +1942,88 @@ export class ClawTvDatabase {
     return [];
   }
 
+  private expandPlayableMatches(items: MediaItemSummary[]): MediaItemSummary[] {
+    const playableItems = items.filter((item) => item.mediaType === "movie" || item.mediaType === "episode");
+
+    if (playableItems.length > 0) {
+      return playableItems;
+    }
+
+    for (const item of items) {
+      if (item.mediaType === "show") {
+        const firstEpisode = this.db.prepare(`
+          SELECT
+            episode_mi.id,
+            episode_mi.title,
+            episode_mi.media_type,
+            show_mi.title AS show_title,
+            episode_mi.year,
+            episode_mi.originally_available_at
+          FROM episodes e
+          JOIN media_items episode_mi ON episode_mi.id = e.media_item_id
+          JOIN media_items show_mi ON show_mi.id = e.show_id
+          LEFT JOIN seasons season ON season.media_item_id = e.season_id
+          WHERE e.show_id = :showId
+          ORDER BY
+            COALESCE(season.season_number, 0) ASC,
+            COALESCE(e.episode_number, 0) ASC,
+            episode_mi.title ASC
+          LIMIT 1
+        `).all({ showId: item.id }) as unknown as MediaRow[];
+
+        if (firstEpisode.length > 0) {
+          return firstEpisode.map(mapMediaRow);
+        }
+      }
+
+      if (item.mediaType === "season") {
+        const firstEpisode = this.db.prepare(`
+          SELECT
+            episode_mi.id,
+            episode_mi.title,
+            episode_mi.media_type,
+            show_mi.title AS show_title,
+            episode_mi.year,
+            episode_mi.originally_available_at
+          FROM episodes e
+          JOIN media_items episode_mi ON episode_mi.id = e.media_item_id
+          LEFT JOIN seasons season ON season.media_item_id = :seasonId
+          LEFT JOIN media_items show_mi ON show_mi.id = COALESCE(e.show_id, season.show_id)
+          WHERE e.season_id = :seasonId
+          ORDER BY
+            COALESCE(e.episode_number, 0) ASC,
+            episode_mi.title ASC
+          LIMIT 1
+        `).all({ seasonId: item.id }) as unknown as MediaRow[];
+
+        if (firstEpisode.length > 0) {
+          return firstEpisode.map(mapMediaRow);
+        }
+      }
+    }
+
+    return items;
+  }
+
+  private resolveShow(show: string): ResolvedShowRow | null {
+    const row = this.db.prepare(`
+      SELECT mi.id, mi.title
+      FROM shows s
+      JOIN media_items mi ON mi.id = s.media_item_id
+      WHERE lower(mi.title) = lower(:show)
+         OR lower(mi.title) LIKE lower(:showPattern)
+      ORDER BY
+        CASE WHEN lower(mi.title) = lower(:show) THEN 0 ELSE 1 END,
+        mi.title ASC
+      LIMIT 1
+    `).get({
+      show,
+      showPattern: `%${show}%`
+    }) as unknown as ResolvedShowRow | undefined;
+
+    return row ?? null;
+  }
+
   private lookupMediaItemsByIds(ids: string[]): MediaItemSummary[] {
     if (ids.length === 0) {
       return [];
@@ -1766,7 +2054,15 @@ function mapMediaRow(row: MediaRow): MediaItemSummary {
     mediaType: row.media_type,
     showTitle: row.show_title,
     year: row.year,
-    originallyAvailableAt: row.originally_available_at
+    originallyAvailableAt: row.originally_available_at,
+    seasonNumber: row.season_number ?? null,
+    episodeNumber: row.episode_number ?? null,
+    viewCount: row.view_count ?? null,
+    lastViewedAt: row.last_viewed_at ?? null,
+    viewOffsetMs: row.view_offset_ms ?? null,
+    userRating: row.user_rating ?? null,
+    audienceRating: row.audience_rating ?? null,
+    criticRating: row.critic_rating ?? null
   };
 }
 
@@ -1794,8 +2090,160 @@ function mapPlaybackItemToMediaSummary(item: PlaybackMediaItem): MediaItemSummar
     mediaType: item.mediaType,
     showTitle: item.showTitle,
     year: item.year,
-    originallyAvailableAt: item.originallyAvailableAt
+    originallyAvailableAt: item.originallyAvailableAt,
+    seasonNumber: item.seasonNumber ?? null,
+    episodeNumber: item.episodeNumber ?? null,
+    viewCount: item.viewCount ?? null,
+    lastViewedAt: item.lastViewedAt ?? null,
+    viewOffsetMs: item.viewOffsetMs ?? null,
+    userRating: item.userRating ?? null,
+    audienceRating: item.audienceRating ?? null,
+    criticRating: item.criticRating ?? null
   };
+}
+
+function buildRecommendationReason(row: MediaRow, strategy: RecommendationStrategy): string {
+  const rating = row.user_rating ?? row.audience_rating ?? row.critic_rating;
+  const viewCount = row.view_count ?? 0;
+  const daysSinceViewed = daysSinceIsoString(row.last_viewed_at);
+
+  if (strategy === "random") {
+    if (viewCount === 0) {
+      return "Random pick, and you have not watched it yet.";
+    }
+    if (daysSinceViewed !== null && daysSinceViewed >= 180) {
+      return "Random pick that has been out of rotation for a while.";
+    }
+    return "Random pick from the show.";
+  }
+
+  if (strategy === "highly-rated" && typeof rating === "number" && rating > 0) {
+    if (viewCount === 0) {
+      return `One of the strongest-rated episodes in the set (${formatRating(rating)}), and you have not watched it yet.`;
+    }
+
+    if (daysSinceViewed !== null && daysSinceViewed >= 180) {
+      return `One of the strongest-rated episodes in the set (${formatRating(rating)}), and it has been a while since you watched it.`;
+    }
+
+    return `One of the strongest-rated episodes in the set (${formatRating(rating)}).`;
+  }
+
+  if (viewCount === 0) {
+    return "A strong place to start that you have not watched yet.";
+  }
+
+  if (!row.last_viewed_at) {
+    return "A solid episode pick from the show.";
+  }
+
+  if (daysSinceViewed !== null && daysSinceViewed >= 365) {
+    return "A good fit based on what you have watched and what has been sitting a long while.";
+  }
+
+  return "A good fit based on what you have watched and what has been sitting a while.";
+}
+
+function scoreRecommendationRow(
+  row: MediaRow,
+  input: {
+    strategy: RecommendationStrategy;
+    recentCutoff: string;
+  }
+): number {
+  const rating = row.user_rating ?? row.audience_rating ?? row.critic_rating ?? 0;
+  const viewCount = row.view_count ?? 0;
+  const daysSinceViewed = daysSinceIsoString(row.last_viewed_at);
+  const staleBonus = !row.last_viewed_at
+    ? 16
+    : daysSinceViewed === null
+      ? 0
+      : daysSinceViewed >= 365
+        ? 18
+        : daysSinceViewed >= 180
+          ? 12
+          : daysSinceViewed >= 90
+            ? 8
+            : daysSinceViewed >= 30
+              ? 4
+              : -8;
+  const unwatchedBonus = viewCount === 0 ? 26 : 0;
+  const lightRotationBonus = viewCount > 0 ? Math.max(0, 10 - Math.min(viewCount, 10)) : 0;
+  const seasonBias = -(((row.season_number ?? 1) - 1) * 0.6) - (((row.episode_number ?? 1) - 1) * 0.04);
+
+  if (input.strategy === "random") {
+    return unwatchedBonus + staleBonus + lightRotationBonus + Math.random() * 100;
+  }
+
+  if (input.strategy === "highly-rated") {
+    return (rating * 11) + (unwatchedBonus * 0.6) + (staleBonus * 0.6) + (lightRotationBonus * 0.3) + seasonBias;
+  }
+
+  return (rating * 5) + unwatchedBonus + staleBonus + (lightRotationBonus * 1.5) + seasonBias;
+}
+
+function compareRecommendationRows(left: MediaRow, right: MediaRow): number {
+  const leftSeason = left.season_number ?? Number.MAX_SAFE_INTEGER;
+  const rightSeason = right.season_number ?? Number.MAX_SAFE_INTEGER;
+  if (leftSeason !== rightSeason) {
+    return leftSeason - rightSeason;
+  }
+
+  const leftEpisode = left.episode_number ?? Number.MAX_SAFE_INTEGER;
+  const rightEpisode = right.episode_number ?? Number.MAX_SAFE_INTEGER;
+  if (leftEpisode !== rightEpisode) {
+    return leftEpisode - rightEpisode;
+  }
+
+  return left.title.localeCompare(right.title);
+}
+
+function daysSinceIsoString(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+
+  return Math.max(0, Math.floor((Date.now() - timestamp) / (1000 * 60 * 60 * 24)));
+}
+
+function compareShuffleRows(
+  left: MediaRow,
+  right: MediaRow,
+  input: {
+    highlyRated: boolean;
+    recentCutoff: string;
+  }
+): number {
+  const leftUnwatched = (left.view_count ?? 0) === 0 ? 0 : 1;
+  const rightUnwatched = (right.view_count ?? 0) === 0 ? 0 : 1;
+  if (leftUnwatched !== rightUnwatched) {
+    return leftUnwatched - rightUnwatched;
+  }
+
+  const leftRecent = !left.last_viewed_at || left.last_viewed_at < input.recentCutoff ? 0 : 1;
+  const rightRecent = !right.last_viewed_at || right.last_viewed_at < input.recentCutoff ? 0 : 1;
+  if (leftRecent !== rightRecent) {
+    return leftRecent - rightRecent;
+  }
+
+  if (input.highlyRated) {
+    const leftRating = left.user_rating ?? left.audience_rating ?? left.critic_rating ?? 0;
+    const rightRating = right.user_rating ?? right.audience_rating ?? right.critic_rating ?? 0;
+    if (leftRating !== rightRating) {
+      return rightRating - leftRating;
+    }
+  }
+
+  return 0;
+}
+
+function formatRating(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function resolveTargetPlaybackPosition(input: {
@@ -1816,6 +2264,22 @@ function resolveTargetPlaybackPosition(input: {
   }
 
   return null;
+}
+
+function parseBooleanPayload(value: unknown): boolean {
+  return value === true
+    || value === 1
+    || value === "1"
+    || value === "true"
+    || value === "yes";
+}
+
+function clampShuffleLimit(value: number | null): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 12;
+  }
+
+  return Math.max(1, Math.min(24, Math.trunc(value)));
 }
 
 function clampPlaybackPosition(value: number, durationMs: number | null): number {

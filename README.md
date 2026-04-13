@@ -65,17 +65,24 @@ export CLAWTV_VOICE_ENABLED=true
 export CLAWTV_VOICE_BACKEND=openclaw
 export CLAWTV_VOICE_ASSISTANT_NAME=Assistant
 export CLAWTV_VOICE_ASSISTANT_ID=default-assistant
-export CLAWTV_VOICE_GREETING_TEXT="Hey, what can I do for you?"
-export CLAWTV_VOICE_PROCESSING_TEXT="Looking into it."
-export CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT="Got it."
-export CLAWTV_VOICE_UNAVAILABLE_TEXT="Voice chat is not available right now."
+export CLAWTV_VOICE_GREETING_TEXT="What's up?"
+export CLAWTV_VOICE_PROCESSING_TEXT="Hang on, I'm on it."
+export CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT="Got you."
+export CLAWTV_VOICE_UNAVAILABLE_TEXT="Didn't catch that. Try me again."
+export CLAWTV_VOICE_GREETING_VARIANTS="Hey, what are we in the mood for?|All right, what are we watching?|Okay, hit me. What do you want?"
+export CLAWTV_VOICE_PROCESSING_VARIANTS="Give me a second.|Okay, let me look.|Hang on, I’m digging through the chaos."
+export CLAWTV_VOICE_ACKNOWLEDGEMENT_VARIANTS="Okay.|Got it.|On it."
+export CLAWTV_VOICE_UNAVAILABLE_VARIANTS="Didn’t catch that. Try me again.|I missed that. Hit me one more time.|That got swallowed. Try again."
 export CLAWTV_VOICE_AUDIO_PACK=default
-export CLAWTV_OPENCLAW_AGENT_ID=jay
+export CLAWTV_OPENCLAW_AGENT_ID=your-assistant-id
 export CLAWTV_OPENCLAW_THINKING=minimal
 export CLAWTV_OPENCLAW_TIMEOUT_SECONDS=90
 export ELEVENLABS_API_KEY=your-elevenlabs-api-key
 export ELEVENLABS_VOICE_ID=your-elevenlabs-voice-id
 export ELEVENLABS_MODEL_ID=eleven_flash_v2_5
+export ELEVENLABS_CUE_MODEL_ID=eleven_flash_v2_5
+export ELEVENLABS_VOICE_SETTINGS_JSON='{"stability":0.42,"similarity_boost":0.78,"style":0.28,"use_speaker_boost":true}'
+export ELEVENLABS_CUE_VOICE_SETTINGS_JSON='{"stability":0.46,"similarity_boost":0.8,"style":0.24,"use_speaker_boost":true}'
 ```
 
 ## CLI Examples
@@ -126,8 +133,8 @@ The repo now has a generic, configurable voice path instead of a hard-coded assi
 - Android TV captures first-pass STT with `SpeechRecognizer`
 - the receiver loads assistant config from `GET /api/voice/config`
 - voice turns post to `POST /api/voice/turn`
-- the server can answer playback questions directly, hand general conversation turns to OpenClaw, and serve pre-rendered cue audio from `assets/voice`
-- when ElevenLabs credentials are configured, reply audio can be cached and streamed back to the TV instead of relying on client TTS
+- the server can answer playback questions directly, hand general conversation turns to OpenClaw, and keep recommendation turns conversational instead of auto-playing when a follow-up makes more sense
+- when ElevenLabs credentials are configured, both cue audio and reply audio can be cached and streamed back to the TV instead of relying on client TTS
 
 The rollout plan for the full live assistant loop is in [docs/voice-roadmap.md](docs/voice-roadmap.md).
 

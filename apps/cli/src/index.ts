@@ -2,6 +2,7 @@
 import type {
   CatalogCollectionListResponse,
   CatalogMediaTypeFilter,
+  CatalogRecommendationResponse,
   CatalogRecentResponse,
   CatalogSearchResponse,
   CatalogShowListResponse,
@@ -123,6 +124,22 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (rawCommand === "recommend-show") {
+      const flags = parseKeyValueFlags(restArgs);
+      if (!flags.show) {
+        throw new Error("recommend-show requires --show \"...\"");
+      }
+
+      const result = await getJson<CatalogRecommendationResponse>(withSearchParams("api/catalog/recommendations/show", {
+        show: flags.show,
+        strategy: flags.strategy,
+        limit: flags.limit,
+        unwatchedOnly: flags["unwatched-only"]
+      }));
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (rawCommand === "sync-plex") {
       const payload = parseKeyValueFlags(restArgs) as Partial<SyncRequest>;
       const result = await postJson("api/sync/plex", {
@@ -170,6 +187,7 @@ Usage:
   clawtv list-shows [--limit 20]
   clawtv list-collections [--limit 20]
   clawtv recently-added [--type movie] [--limit 10]
+  clawtv recommend-show --show "Seinfeld" [--strategy default|random|highly-rated] [--limit 3]
   clawtv sync-status
   clawtv sync-plex --mode full-sync [--library "TV Shows"]
   clawtv play --title "The Matrix"

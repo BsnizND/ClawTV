@@ -7,14 +7,21 @@ fun escapeBuildConfig(value: String): String {
     return value.replace("\\", "\\\\").replace("\"", "\\\"")
 }
 
-val defaultReceiverUrl = "http://192.168.0.71:4390/ClawTV/"
+val defaultReceiverUrl = "http://clawtv.local:4390/ClawTV/"
 val configuredReceiverUrl = providers.gradleProperty("clawtvReceiverUrl").orNull ?: defaultReceiverUrl
+val configuredReceiverFallbackUrlsJson = providers.gradleProperty("clawtvReceiverFallbackUrlsJson").orNull
+    ?: providers.gradleProperty("clawtvReceiverFallbackUrls").orNull
+        ?.split(",")
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?.joinToString(prefix = "[", postfix = "]") { "\"${escapeBuildConfig(it)}\"" }
+    ?: "[]"
 val defaultVoiceAssistantName = providers.gradleProperty("clawtvVoiceAssistantName").orNull ?: "Assistant"
 val defaultVoiceAssistantId = providers.gradleProperty("clawtvVoiceAssistantId").orNull ?: "default-assistant"
-val defaultVoiceGreetingText = providers.gradleProperty("clawtvVoiceGreetingText").orNull ?: "Hey, what can I do for you?"
-val defaultVoiceProcessingText = providers.gradleProperty("clawtvVoiceProcessingText").orNull ?: "Looking into it."
-val defaultVoiceAcknowledgementText = providers.gradleProperty("clawtvVoiceAcknowledgementText").orNull ?: "Got it."
-val defaultVoiceUnavailableText = providers.gradleProperty("clawtvVoiceUnavailableText").orNull ?: "Voice chat is not available right now."
+val defaultVoiceGreetingText = providers.gradleProperty("clawtvVoiceGreetingText").orNull ?: "What's up?"
+val defaultVoiceProcessingText = providers.gradleProperty("clawtvVoiceProcessingText").orNull ?: "Hang on, I'm on it."
+val defaultVoiceAcknowledgementText = providers.gradleProperty("clawtvVoiceAcknowledgementText").orNull ?: "Got you."
+val defaultVoiceUnavailableText = providers.gradleProperty("clawtvVoiceUnavailableText").orNull ?: "Didn't catch that. Try me again."
 val defaultVoiceEnabled = providers.gradleProperty("clawtvVoiceEnabled").orNull?.toBooleanStrictOrNull() ?: true
 
 android {
@@ -29,6 +36,7 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "CLAWTV_RECEIVER_URL", "\"${escapeBuildConfig(configuredReceiverUrl)}\"")
+        buildConfigField("String", "CLAWTV_RECEIVER_FALLBACK_URLS_JSON", "\"${escapeBuildConfig(configuredReceiverFallbackUrlsJson)}\"")
         buildConfigField("boolean", "CLAWTV_VOICE_ENABLED", defaultVoiceEnabled.toString())
         buildConfigField("String", "CLAWTV_VOICE_ASSISTANT_NAME", "\"${escapeBuildConfig(defaultVoiceAssistantName)}\"")
         buildConfigField("String", "CLAWTV_VOICE_ASSISTANT_ID", "\"${escapeBuildConfig(defaultVoiceAssistantId)}\"")

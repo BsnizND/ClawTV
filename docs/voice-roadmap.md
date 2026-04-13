@@ -13,7 +13,7 @@ That gets the repo off the hard-coded assistant stub and gives us a stable contr
 
 What is implemented now:
 
-- generic assistant config instead of Kay-specific copy
+- generic assistant config instead of assistant-specific copy baked into the app
 - Android TV build-time voice defaults
 - server-side `GET /api/voice/config`
 - server-side `POST /api/voice/turn`

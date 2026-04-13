@@ -199,6 +199,12 @@ function mapMediaItem(
     thumbUrl: buildPlexAssetUrl(options.baseUrl, art, options.token),
     addedAt: addedAtSeconds ? new Date(addedAtSeconds * 1000).toISOString() : null,
     updatedAt: updatedAtSeconds ? new Date(updatedAtSeconds * 1000).toISOString() : new Date().toISOString(),
+    viewCount: asNullableNumber(rawItem.viewCount),
+    lastViewedAt: asUnixTimestamp(rawItem.lastViewedAt),
+    viewOffsetMs: asNullableNumber(rawItem.viewOffset),
+    userRating: asNullableNumber(rawItem.userRating),
+    audienceRating: asNullableNumber(rawItem.audienceRating),
+    criticRating: asNullableNumber(rawItem.rating),
     showId: mediaType === "season"
       ? buildMediaItemId(asString(rawItem.parentRatingKey))
       : mediaType === "episode"
@@ -328,6 +334,11 @@ function asNumber(value: unknown): number | null {
 
 function asNullableNumber(value: unknown): number | null {
   return asNumber(value);
+}
+
+function asUnixTimestamp(value: unknown): string | null {
+  const seconds = asNumber(value);
+  return seconds ? new Date(seconds * 1000).toISOString() : null;
 }
 
 function asMediaType(value: unknown): CatalogMediaItemRecord["mediaType"] | null {

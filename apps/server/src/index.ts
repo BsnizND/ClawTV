@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import type {
+  CatalogRecommendationResponse,
   CatalogMediaTypeFilter,
   ClientPlaybackState,
   CommandName,
@@ -17,6 +18,7 @@ import type {
   VoiceTurnRequest,
   VoiceTurnResponse,
   PlaybackStateUpdateRequest,
+  RecommendationStrategy,
   SyncMode
 } from "@clawtv/contracts";
 import { DEFAULT_BASE_PATH, normalizeBasePath, withBasePath } from "@clawtv/core";
@@ -82,7 +84,7 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "GET" && routePath === "/api/voice/config") {
-    sendJson(response, 200, buildVoiceConfig());
+    sendJson(response, 200, await buildVoiceConfig());
     return;
   }
 
@@ -253,7 +255,8 @@ const server = createServer(async (request, response) => {
       : undefined;
     db.setClientPlaybackState(nextState, {
       sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
-      positionMs: nextPositionMs
+      positionMs: nextPositionMs,
+      currentItemId: typeof body.currentItemId === "string" ? body.currentItemId : body.currentItemId === null ? null : undefined
     });
 
     sendJson(response, 200, buildPlaybackSnapshot());
@@ -262,7 +265,7 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "POST" && routePath === "/api/voice/turn") {
     const body = (await readJsonBody(request)) as unknown as VoiceTurnRequest;
-    const voiceConfig = buildVoiceConfig();
+    const voiceConfig = await buildVoiceConfig();
 
     if (!voiceConfig.enabled) {
       sendJson(response, 503, {
@@ -362,6 +365,26 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && routePath === "/api/catalog/collections") {
     const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
     sendJson(response, 200, db.listCollections(limit));
+    return;
+  }
+
+  if (request.method === "GET" && routePath === "/api/catalog/recommendations/show") {
+    const show = requestUrl.searchParams.get("show") ?? "";
+    const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
+    const strategy = parseRecommendationStrategy(requestUrl.searchParams.get("strategy"));
+    const unwatchedOnly = parseBooleanQuery(requestUrl.searchParams.get("unwatchedOnly"));
+
+    sendJson(response, 200, db.recommendEpisodes({
+      show,
+      strategy,
+      limit,
+      unwatchedOnly
+    } satisfies {
+      show: string;
+      strategy?: RecommendationStrategy;
+      limit?: number;
+      unwatchedOnly?: boolean;
+    }));
     return;
   }
 
@@ -522,6 +545,20 @@ function parseCatalogLimit(value: string | null): number | undefined {
   return parsed;
 }
 
+function parseRecommendationStrategy(value: string | null): RecommendationStrategy | undefined {
+  return value === "default" || value === "random" || value === "highly-rated"
+    ? value
+    : undefined;
+}
+
+function parseBooleanQuery(value: string | null): boolean | undefined {
+  if (value === null) {
+    return undefined;
+  }
+
+  return value === "1" || value === "true" || value === "yes";
+}
+
 function parsePlaybackState(value: unknown): ClientPlaybackState {
   return value === "booting"
     || value === "idle"
@@ -625,23 +662,27 @@ function buildPlaybackSnapshot() {
   };
 }
 
-function buildVoiceConfig(): VoiceConfig {
+async function buildVoiceConfig(): Promise<VoiceConfig> {
   const backend = resolveVoiceBackend();
   const replyMode = resolveVoiceReplyMode();
+  const greetingText = pickCueLine("greeting", process.env.CLAWTV_VOICE_GREETING_TEXT?.trim() || "Hey, what can I do for you?");
+  const processingText = pickCueLine("processing", process.env.CLAWTV_VOICE_PROCESSING_TEXT?.trim() || "Looking into it.");
+  const acknowledgementText = pickCueLine("acknowledgement", process.env.CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT?.trim() || "Got it.");
+  const unavailableText = pickCueLine("unavailable", process.env.CLAWTV_VOICE_UNAVAILABLE_TEXT?.trim() || "Voice chat is not available right now.");
 
   return {
     enabled: parseBooleanEnv(process.env.CLAWTV_VOICE_ENABLED, true),
     backend,
     assistantId: process.env.CLAWTV_VOICE_ASSISTANT_ID?.trim() || "default-assistant",
     assistantName: process.env.CLAWTV_VOICE_ASSISTANT_NAME?.trim() || "Assistant",
-    greetingText: process.env.CLAWTV_VOICE_GREETING_TEXT?.trim() || "Hey, what can I do for you?",
-    processingText: process.env.CLAWTV_VOICE_PROCESSING_TEXT?.trim() || "Looking into it.",
-    acknowledgementText: process.env.CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT?.trim() || "Got it.",
-    unavailableText: process.env.CLAWTV_VOICE_UNAVAILABLE_TEXT?.trim() || "Voice chat is not available right now.",
-    greetingAudioUrl: pickVoiceCueUrl("greeting"),
-    processingAudioUrl: pickVoiceCueUrl("processing"),
-    acknowledgementAudioUrl: pickVoiceCueUrl("acknowledgement"),
-    unavailableAudioUrl: pickVoiceCueUrl("unavailable"),
+    greetingText,
+    processingText,
+    acknowledgementText,
+    unavailableText,
+    greetingAudioUrl: await resolveVoiceCueUrl("greeting", greetingText),
+    processingAudioUrl: await resolveVoiceCueUrl("processing", processingText),
+    acknowledgementAudioUrl: await resolveVoiceCueUrl("acknowledgement", acknowledgementText),
+    unavailableAudioUrl: await resolveVoiceCueUrl("unavailable", unavailableText),
     sttMode: "shield",
     replyMode
   };
@@ -654,6 +695,7 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
   const shouldResumeOriginalPlayback = body.playbackState === "playing" || body.playbackState === "loading";
   let action: VoiceTurnResponse["action"] = "none";
   let replyText = "";
+  let expectsReply = false;
 
   if (!transcript) {
     replyText = "I didn't catch that. Please try again.";
@@ -698,11 +740,47 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
   } else if (asksWhatIsPlaying(normalizedTranscript)) {
     replyText = describeNowPlaying(playbackBefore);
   } else {
-    replyText = await buildConversationalReply({
-      transcript,
-      playback: playbackBefore,
-      voiceConfig
-    });
+    const curatorDecision = maybeBuildCuratorVoiceDecision(transcript);
+    if (curatorDecision) {
+      replyText = curatorDecision.replyText;
+      action = curatorDecision.commandName;
+      expectsReply = curatorDecision.expectsReply;
+
+      if (curatorDecision.commandName !== "none") {
+        const result = db.applyCommand({
+          commandName: curatorDecision.commandName,
+          payload: curatorDecision.payload,
+          source: "voice"
+        });
+
+        if (!result.ok) {
+          action = "none";
+          replyText = result.message;
+        }
+      }
+    } else {
+      const decision = await buildConversationalReply({
+        transcript,
+        playback: playbackBefore,
+        voiceConfig
+      });
+
+      replyText = decision.replyText;
+      expectsReply = decision.expectsReply;
+
+      if (decision.commandName !== "none") {
+        action = decision.commandName;
+        const result = db.applyCommand({
+          commandName: decision.commandName,
+          payload: decision.payload,
+          source: "voice"
+        });
+
+        if (!result.ok || !replyText.trim()) {
+          replyText = result.message;
+        }
+      }
+    }
   }
 
   const playbackAfter = buildPlaybackSnapshot();
@@ -728,7 +806,8 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
     replyAudioUrl,
     sttMode: voiceConfig.sttMode,
     replyMode,
-    resumePlayback: action === "none" && shouldResumeOriginalPlayback,
+    expectsReply,
+    resumePlayback: !expectsReply && action === "none" && shouldResumeOriginalPlayback,
     action,
     playback: playbackAfter
   };
@@ -738,7 +817,27 @@ async function buildConversationalReply(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
-}): Promise<string> {
+}): Promise<{
+  replyText: string;
+  commandName: VoiceTurnResponse["action"];
+  payload: Record<string, unknown>;
+  expectsReply: boolean;
+}> {
+  const curatorIntent = extractCuratorConversationIntent(input.transcript);
+
+  if (curatorIntent) {
+    const curatorReply = await buildCuratorConversationReply({
+      transcript: input.transcript,
+      playback: input.playback,
+      voiceConfig: input.voiceConfig,
+      intent: curatorIntent
+    });
+
+    if (curatorReply) {
+      return curatorReply;
+    }
+  }
+
   if (input.voiceConfig.backend === "openclaw") {
     const openClawReply = await runOpenClawVoiceTurn(input);
     if (openClawReply) {
@@ -746,16 +845,271 @@ async function buildConversationalReply(input: {
     }
   }
 
-  return `I heard: "${input.transcript}". The live assistant handoff is not available right now, but the voice turn plumbing is ready.`;
+  return {
+    replyText: `I heard: "${input.transcript}". The live assistant handoff is not available right now, but the voice turn plumbing is ready.`,
+    commandName: "none",
+    payload: {},
+    expectsReply: false
+  };
+}
+
+function maybeBuildCuratorVoiceDecision(transcript: string): {
+  replyText: string;
+  commandName: VoiceTurnResponse["action"];
+  payload: Record<string, unknown>;
+  expectsReply: boolean;
+} | null {
+  const normalized = transcript.toLowerCase().trim();
+  const randomShow = extractShowRequest(normalized, [
+    /(?:play|watch|put on)\s+(?:a\s+)?random episode of\s+(.+)/u
+  ]);
+
+  if (randomShow) {
+    const recommendation = db.recommendEpisodes({
+      show: randomShow,
+      strategy: "random",
+      limit: 1
+    });
+    const topPick = recommendation.items[0];
+
+    if (!topPick) {
+      return null;
+    }
+
+    return {
+      replyText: `Let's do ${formatRecommendationTitle(topPick)}. ${topPick.reason}`,
+      commandName: "play",
+      payload: {
+        mediaItemId: topPick.item.id,
+        title: topPick.item.title
+      },
+      expectsReply: false
+    };
+  }
+
+  const highlyRatedShow = extractShowRequest(normalized, [
+    /shuffle\s+highly rated episodes of\s+(.+)/u,
+    /play\s+highly rated episodes of\s+(.+)/u
+  ]);
+
+  if (highlyRatedShow) {
+    const canonicalShow = db.recommendEpisodes({
+      show: highlyRatedShow,
+      strategy: "highly-rated",
+      limit: 1
+    }).show || highlyRatedShow;
+
+    if (normalized.includes("shuffle")) {
+      return {
+        replyText: `Okay. Shuffling strong episodes from ${canonicalShow}.`,
+        commandName: "shuffle",
+        payload: {
+          show: canonicalShow,
+          highlyRated: true,
+          limit: 12
+        },
+        expectsReply: false
+      };
+    }
+
+    const recommendation = db.recommendEpisodes({
+      show: highlyRatedShow,
+      strategy: "highly-rated",
+      limit: 1
+    });
+    const topPick = recommendation.items[0];
+    if (!topPick) {
+      return null;
+    }
+
+    return {
+      replyText: `Let's go with ${formatRecommendationTitle(topPick)}. ${topPick.reason}`,
+      commandName: "play",
+      payload: {
+        mediaItemId: topPick.item.id,
+        title: topPick.item.title
+      },
+      expectsReply: false
+    };
+  }
+
+  const shuffleShow = extractShowRequest(normalized, [
+    /shuffle\s+episodes of\s+(.+)/u,
+    /shuffle\s+(.+?)\s+episodes/u,
+    /shuffle\s+(.+)/u
+  ]);
+
+  if (shuffleShow) {
+    const canonicalShow = db.recommendEpisodes({
+      show: shuffleShow,
+      strategy: "default",
+      limit: 1
+    }).show || shuffleShow;
+
+    return {
+      replyText: `Okay. Shuffling ${canonicalShow}.`,
+      commandName: "shuffle",
+      payload: {
+        show: canonicalShow,
+        limit: 12
+      },
+      expectsReply: false
+    };
+  }
+
+  return null;
+}
+
+function extractCuratorConversationIntent(transcript: string): {
+  show: string;
+  strategy: RecommendationStrategy;
+  promptStyle: "broad" | "recommendation" | "best-of";
+} | null {
+  const normalized = transcript.toLowerCase().trim();
+  const broadShow = extractShowRequest(normalized, [
+    /let'?s watch some\s+(.+)/u,
+    /play some\s+(.+)/u,
+    /watch some\s+(.+)/u
+  ]);
+
+  if (broadShow) {
+    return {
+      show: broadShow,
+      strategy: "default",
+      promptStyle: "broad"
+    };
+  }
+
+  const recommendationShow = extractShowRequest(normalized, [
+    /what(?:'s|s| is)\s+(?:a\s+)?good episode of\s+(.+)/u,
+    /recommend(?:\s+an?)?\s+episode of\s+(.+)/u,
+    /suggest(?:\s+an?)?\s+episode of\s+(.+)/u,
+    /suggest(?:\s+an?)?\s+(.+?)\s+episode/u,
+    /recommend(?:\s+an?)?\s+(.+?)\s+episode/u,
+    /what(?:'s|s| is)\s+(?:a\s+)?good\s+(.+?)\s+episode/u
+  ]);
+
+  if (recommendationShow) {
+    return {
+      show: recommendationShow,
+      strategy: "default",
+      promptStyle: "recommendation"
+    };
+  }
+
+  const bestOfShow = extractShowRequest(normalized, [
+    /best episodes of\s+(.+)/u,
+    /best\s+(.+?)\s+episodes/u
+  ]);
+
+  if (bestOfShow) {
+    return {
+      show: bestOfShow,
+      strategy: "highly-rated",
+      promptStyle: "best-of"
+    };
+  }
+
+  return null;
+}
+
+function extractShowRequest(transcript: string, patterns: RegExp[]): string | null {
+  for (const pattern of patterns) {
+    const match = transcript.match(pattern);
+    const rawShow = match?.[1]?.trim().replace(/[?.!,]+$/u, "");
+    if (rawShow) {
+      return rawShow;
+    }
+  }
+
+  return null;
+}
+
+function formatRecommendationTitle(input: CatalogRecommendationResponse["items"][number]): string {
+  const episodeLabel = formatEpisodeLabel(input.item.seasonNumber ?? null, input.item.episodeNumber ?? null);
+  const parts = [
+    input.item.showTitle,
+    episodeLabel,
+    input.item.title
+  ].filter((value): value is string => Boolean(value));
+
+  return parts.join(" - ");
+}
+
+async function buildCuratorConversationReply(input: {
+  transcript: string;
+  playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
+  voiceConfig: VoiceConfig;
+  intent: {
+    show: string;
+    strategy: RecommendationStrategy;
+    promptStyle: "broad" | "recommendation" | "best-of";
+  };
+}): Promise<{
+  replyText: string;
+  commandName: VoiceTurnResponse["action"];
+  payload: Record<string, unknown>;
+  expectsReply: boolean;
+} | null> {
+  const recommendation = db.recommendEpisodes({
+    show: input.intent.show,
+    strategy: input.intent.strategy,
+    limit: 5
+  });
+
+  if (recommendation.items.length === 0) {
+    return null;
+  }
+
+  if (input.voiceConfig.backend === "openclaw") {
+    const openClawReply = await runOpenClawVoiceTurn({
+      transcript: input.transcript,
+      playback: input.playback,
+      voiceConfig: input.voiceConfig,
+      curatorIntent: input.intent,
+      recommendation
+    });
+
+    if (openClawReply) {
+      return openClawReply;
+    }
+  }
+
+  const picks = recommendation.items
+    .slice(0, 3)
+    .map((entry) => formatRecommendationTitle(entry))
+    .join(", ");
+
+  const followUp = input.intent.promptStyle === "best-of"
+    ? "I can go with one of those, or I can narrow it by vibe. Want something cozy, chaotic, or all-timer?"
+    : "I can narrow it by vibe if you want. Want something cozy, chaotic, or all-timer?";
+
+  return {
+    replyText: `A few good ${recommendation.show} picks: ${picks}. ${followUp}`,
+    commandName: "none",
+    payload: {},
+    expectsReply: true
+  };
 }
 
 async function runOpenClawVoiceTurn(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
-}): Promise<string | null> {
+  curatorIntent?: {
+    show: string;
+    strategy: RecommendationStrategy;
+    promptStyle: "broad" | "recommendation" | "best-of";
+  };
+  recommendation?: CatalogRecommendationResponse;
+}): Promise<{
+  replyText: string;
+  commandName: VoiceTurnResponse["action"];
+  payload: Record<string, unknown>;
+  expectsReply: boolean;
+} | null> {
   const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
-  const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || "jay";
+  const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.voiceConfig.assistantId || "default-assistant";
   const thinking = process.env.CLAWTV_OPENCLAW_THINKING?.trim() || "minimal";
   const timeoutSeconds = Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90);
   const prompt = buildOpenClawPrompt(input);
@@ -773,10 +1127,14 @@ async function runOpenClawVoiceTurn(input: {
       String(Number.isFinite(timeoutSeconds) ? timeoutSeconds : 90),
       "--json"
     ], {
+      env: {
+        ...process.env,
+        PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
+      },
       maxBuffer: 2 * 1024 * 1024
     });
 
-    return extractOpenClawReplyText(stdout);
+    return extractOpenClawReply(stdout);
   } catch (error) {
     console.warn("OpenClaw voice handoff failed", error);
     return null;
@@ -787,19 +1145,57 @@ function buildOpenClawPrompt(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
+  curatorIntent?: {
+    show: string;
+    strategy: RecommendationStrategy;
+    promptStyle: "broad" | "recommendation" | "best-of";
+  };
+  recommendation?: CatalogRecommendationResponse;
 }): string {
   const playbackSummary = describePlaybackContextForPrompt(input.playback);
+  const recommendationContext = input.recommendation
+    ? describeRecommendationContextForPrompt(input.recommendation)
+    : "No recommendation candidate list was provided for this turn.";
+  const recommendationPrompt = input.curatorIntent
+    ? `This is a recommendation turn for ${input.curatorIntent.show}. Use the supplied local watch data and rating data as the personalization layer. If helpful, use web search to compare reputable best-episode or ranking lists before you answer so you feel like a personalized metacritic instead of a library index. Unless the user explicitly asked to play, shuffle, or randomize, keep commandName as none and do not start playback. If you ask a follow-up question or are waiting for a preference, set expectsReply to true. Candidate episodes from the local library: ${recommendationContext}`
+    : "If you ask a follow-up question or are waiting for a clarification, set expectsReply to true.";
 
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
-    "Reply in natural spoken language for TV playback voice chat.",
-    "Keep the response concise, warm, and under two short sentences unless the question truly needs more.",
-    "Do not mention OpenClaw, prompts, JSON, transport, or implementation details.",
+    "Return JSON only.",
+    "Schema: {\"replyText\":\"string\",\"commandName\":\"none|play|play-latest|shuffle|pause|resume|next|stop\",\"payload\":{},\"expectsReply\":boolean}",
+    "replyText should sound warm, direct, playful, and human. Keep it concise.",
     "If the user asks about what is currently on, remaining runtime, remaining episodes, or remaining seasons, use the supplied playback context only.",
-    "If the user asks for something you cannot verify from the supplied playback context, answer helpfully but briefly.",
+    "If the user asks to play a specific title, use commandName play and payload {\"title\":\"...\"}.",
+    "If the user asks to play some of a show, or to put on a show without naming a specific episode, it is okay to ask a recommendation follow-up question first instead of auto-playing.",
+    "If the user asks for the latest episode of a show, use commandName play-latest and payload {\"series\":\"...\"}.",
+    "If the user asks for a random episode of a show, use commandName shuffle and payload {\"show\":\"...\",\"limit\":1}.",
+    "If the user asks to shuffle a show, use commandName shuffle and payload {\"show\":\"...\"}.",
+    "If the user explicitly asks to play or shuffle highly rated or best episodes of a show, use commandName shuffle and payload {\"show\":\"...\",\"highlyRated\":true}.",
+    "If the user asks to shuffle a collection, use commandName shuffle and payload {\"collection\":\"...\"}.",
+    "If the user asks for pause, resume, next, or stop, use that commandName with an empty payload object.",
+    "If you are unsure what to play, set commandName to none and ask one short clarifying question.",
+    "Never claim you already started playback unless commandName is not none and matches the action you want executed.",
+    "Do not mention OpenClaw, prompts, JSON, transport, or implementation details.",
+    recommendationPrompt,
     `Current playback context: ${playbackSummary}`,
     `User said: ${input.transcript}`
   ].join(" ");
+}
+
+function describeRecommendationContextForPrompt(input: CatalogRecommendationResponse): string {
+  return input.items
+    .slice(0, 5)
+    .map((entry) => {
+      const rating = entry.item.userRating ?? entry.item.audienceRating ?? entry.item.criticRating;
+      const watchState = (entry.item.viewCount ?? 0) > 0
+        ? `watched ${entry.item.viewCount} time(s)`
+        : "unwatched";
+      const lastViewed = entry.item.lastViewedAt ? `last viewed ${entry.item.lastViewedAt}` : "not recently viewed";
+      const ratingText = typeof rating === "number" && rating > 0 ? `rating ${formatRating(rating)}` : "no rating";
+      return `${formatRecommendationTitle(entry)} [${watchState}; ${lastViewed}; ${ratingText}] because ${entry.reason}`;
+    })
+    .join(" | ");
 }
 
 function describePlaybackContextForPrompt(snapshot: PlaybackSnapshot): string {
@@ -826,26 +1222,95 @@ function describePlaybackContextForPrompt(snapshot: PlaybackSnapshot): string {
   return parts.join(" | ");
 }
 
-function extractOpenClawReplyText(stdout: string): string | null {
+function extractOpenClawReply(stdout: string): {
+  replyText: string;
+  commandName: VoiceTurnResponse["action"];
+  payload: Record<string, unknown>;
+  expectsReply: boolean;
+} | null {
   try {
     const payload = JSON.parse(stdout) as {
       result?: {
         payloads?: Array<{
           text?: string | null;
         }>;
+        finalAssistantVisibleText?: string | null;
       };
     };
 
-    const text = payload.result?.payloads
+    const rawText = payload.result?.payloads
       ?.map((entry) => entry.text?.trim())
       .filter((entry): entry is string => Boolean(entry))
-      .join("\n\n");
+      .join("\n\n")
+      || payload.result?.finalAssistantVisibleText?.trim()
+      || null;
 
-    return text && text.length > 0 ? text : null;
+    if (!rawText) {
+      return null;
+    }
+
+    const decision = JSON.parse(rawText) as {
+      replyText?: unknown;
+      commandName?: unknown;
+      payload?: unknown;
+      expectsReply?: unknown;
+    };
+
+    return {
+      replyText: typeof decision.replyText === "string" && decision.replyText.trim().length > 0
+        ? decision.replyText.trim()
+        : rawText,
+      commandName: parseVoiceCommandName(decision.commandName),
+      payload: isPlainObject(decision.payload) ? decision.payload : {},
+      expectsReply: typeof decision.expectsReply === "boolean"
+        ? decision.expectsReply
+        : parseVoiceCommandName(decision.commandName) === "none" && rawText.trim().endsWith("?")
+    };
   } catch (error) {
     console.warn("Unable to parse OpenClaw agent JSON output", error);
-    return null;
+
+    try {
+      const payload = JSON.parse(stdout) as {
+        result?: {
+          payloads?: Array<{
+            text?: string | null;
+          }>;
+          finalAssistantVisibleText?: string | null;
+        };
+      };
+      const rawText = payload.result?.payloads
+        ?.map((entry) => entry.text?.trim())
+        .filter((entry): entry is string => Boolean(entry))
+        .join("\n\n")
+        || payload.result?.finalAssistantVisibleText?.trim()
+        || null;
+
+      return rawText ? {
+        replyText: rawText,
+        commandName: "none",
+        payload: {},
+        expectsReply: rawText.trim().endsWith("?")
+      } : null;
+    } catch {
+      return null;
+    }
   }
+}
+
+function parseVoiceCommandName(value: unknown): VoiceTurnResponse["action"] {
+  return value === "play"
+    || value === "play-latest"
+    || value === "shuffle"
+    || value === "pause"
+    || value === "resume"
+    || value === "next"
+    || value === "stop"
+    ? value
+    : "none";
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function resolveVoiceBackend(): VoiceConfig["backend"] {
@@ -858,26 +1323,53 @@ function resolveVoiceReplyMode(): VoiceConfig["replyMode"] {
 }
 
 async function synthesizeVoiceReplyAudio(text: string): Promise<string | null> {
+  return synthesizeVoiceAudio(text, {
+    bucket: "replies",
+    modelId: process.env.ELEVENLABS_MODEL_ID?.trim() || "eleven_flash_v2_5"
+  });
+}
+
+async function resolveVoiceCueUrl(
+  category: "greeting" | "processing" | "acknowledgement" | "unavailable",
+  text: string
+): Promise<string | null> {
+  const synthesized = await synthesizeVoiceAudio(text, {
+    bucket: `cues/${category}`,
+    modelId: process.env.ELEVENLABS_CUE_MODEL_ID?.trim()
+      || process.env.ELEVENLABS_MODEL_ID?.trim()
+      || "eleven_flash_v2_5"
+  });
+
+  return synthesized ?? pickVoiceCueUrl(category);
+}
+
+async function synthesizeVoiceAudio(inputText: string, options: {
+  bucket: string;
+  modelId: string;
+}): Promise<string | null> {
+  const text = inputText.trim();
+
   if (!text.trim() || !isElevenLabsConfigured()) {
     return null;
   }
 
   const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
   const voiceId = process.env.ELEVENLABS_VOICE_ID?.trim();
-  const modelId = process.env.ELEVENLABS_MODEL_ID?.trim() || "eleven_flash_v2_5";
+  const modelId = options.modelId;
+  const voiceSettings = resolveElevenLabsVoiceSettings(options.bucket.startsWith("cues/"));
 
   if (!apiKey || !voiceId) {
     return null;
   }
 
-  const replyDir = join(voiceCacheDir, "replies");
-  mkdirSync(replyDir, { recursive: true });
+  const cacheDir = join(voiceCacheDir, ...options.bucket.split("/"));
+  mkdirSync(cacheDir, { recursive: true });
 
   const cacheKey = createHash("sha256")
-    .update(JSON.stringify({ voiceId, modelId, text }))
+    .update(JSON.stringify({ voiceId, modelId, bucket: options.bucket, text, voiceSettings }))
     .digest("hex");
   const fileName = `${cacheKey}.mp3`;
-  const filePath = join(replyDir, fileName);
+  const filePath = join(cacheDir, fileName);
 
   if (!existsSync(filePath)) {
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
@@ -889,7 +1381,8 @@ async function synthesizeVoiceReplyAudio(text: string): Promise<string | null> {
       },
       body: JSON.stringify({
         text,
-        model_id: modelId
+        model_id: modelId,
+        voice_settings: voiceSettings ?? undefined
       })
     });
 
@@ -903,7 +1396,48 @@ async function synthesizeVoiceReplyAudio(text: string): Promise<string | null> {
     writeFileSync(filePath, audioBuffer);
   }
 
-  return withBasePath(basePath, `/api/voice/audio/replies/${encodeURIComponent(fileName)}`);
+  return withBasePath(basePath, `/api/voice/audio/${options.bucket}/${encodeURIComponent(fileName)}`);
+}
+
+function pickCueLine(
+  category: "greeting" | "processing" | "acknowledgement" | "unavailable",
+  fallbackText: string
+): string {
+  const envKey = category === "greeting"
+    ? "CLAWTV_VOICE_GREETING_VARIANTS"
+    : category === "processing"
+      ? "CLAWTV_VOICE_PROCESSING_VARIANTS"
+      : category === "acknowledgement"
+        ? "CLAWTV_VOICE_ACKNOWLEDGEMENT_VARIANTS"
+        : "CLAWTV_VOICE_UNAVAILABLE_VARIANTS";
+  const variants = (process.env[envKey] ?? "")
+    .split("|")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  if (variants.length === 0) {
+    return fallbackText;
+  }
+
+  return variants[Math.floor(Math.random() * variants.length)] ?? fallbackText;
+}
+
+function resolveElevenLabsVoiceSettings(isCue: boolean): Record<string, unknown> | null {
+  const raw = isCue
+    ? process.env.ELEVENLABS_CUE_VOICE_SETTINGS_JSON?.trim() || process.env.ELEVENLABS_VOICE_SETTINGS_JSON?.trim()
+    : process.env.ELEVENLABS_VOICE_SETTINGS_JSON?.trim();
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch (error) {
+    console.warn(`Unable to parse ElevenLabs voice settings JSON (${isCue ? "cue" : "reply"}):`, error);
+    return null;
+  }
 }
 
 function isElevenLabsConfigured(): boolean {
@@ -941,6 +1475,15 @@ function serveVoiceAudio(routePath: string, headOnly: boolean, response: ServerR
   if (routePath.startsWith("/api/voice/audio/replies/")) {
     const fileName = decodeURIComponent(routePath.replace("/api/voice/audio/replies/", ""));
     return serveFileFromRoot(join(voiceCacheDir, "replies"), fileName, headOnly, response);
+  }
+
+  if (routePath.startsWith("/api/voice/audio/cues/")) {
+    const parts = routePath.replace("/api/voice/audio/cues/", "").split("/").map((part) => decodeURIComponent(part));
+    const [category, fileName] = parts;
+    if (!category || !fileName) {
+      return false;
+    }
+    return serveFileFromRoot(join(voiceCacheDir, "cues", category), fileName, headOnly, response);
   }
 
   if (routePath.startsWith("/api/voice/audio/packs/")) {
@@ -1090,6 +1633,10 @@ function formatDuration(durationMs: number): string {
   }
 
   return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
+function formatRating(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
@@ -1292,13 +1839,29 @@ async function proxyBinaryResponse(input: {
     upstreamHeaders.set("Range", rangeHeader);
   }
 
-  const upstreamResponse = await fetch(input.sourceUrl, {
-    method: input.request.method,
-    headers: upstreamHeaders
-  });
+  let upstreamResponse: Response | null = null;
 
-  if (!upstreamResponse.ok && upstreamResponse.status !== 206) {
-    throw new Error(`Plex proxy request failed with status ${upstreamResponse.status}.`);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const candidateResponse = await fetch(input.sourceUrl, {
+      method: input.request.method,
+      headers: upstreamHeaders
+    });
+
+    if (candidateResponse.ok || candidateResponse.status === 206) {
+      upstreamResponse = candidateResponse;
+      break;
+    }
+
+    if (!isRetryablePlexStatus(candidateResponse.status) || attempt === 2) {
+      throw new Error(`Plex proxy request failed with status ${candidateResponse.status}.`);
+    }
+
+    await candidateResponse.body?.cancel().catch(() => undefined);
+    await sleep(350 * (attempt + 1));
+  }
+
+  if (upstreamResponse == null) {
+    throw new Error("Plex proxy request failed before a usable response was received.");
   }
 
   input.response.writeHead(upstreamResponse.status, buildProxyHeaders(upstreamResponse));
@@ -1422,6 +1985,14 @@ function appendPlexToken(sourceUrl: string, token: string, plexBaseUrl: string):
   }
 
   return url.toString();
+}
+
+function isRetryablePlexStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+async function sleep(delayMs: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function isStalePlexPlaylistError(error: unknown): boolean {
