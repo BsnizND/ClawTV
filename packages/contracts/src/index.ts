@@ -9,6 +9,9 @@ export type CatalogMediaTypeFilter = MediaType | "any";
 export type PlaybackClientMode = "idle" | "native-hls" | "hls.js" | "unsupported";
 export type PlaybackAutoplayStatus = "unknown" | "started" | "blocked" | "failed";
 export type ReceiverCommandType = "refresh";
+export type VoiceReplyMode = "client-tts" | "server-audio" | "none";
+export type VoiceSttMode = "shield" | "server";
+export type VoiceBackendMode = "mock" | "openclaw";
 
 export interface SessionSummary {
   id: string;
@@ -61,6 +64,31 @@ export interface PlaybackMediaItem extends MediaItemSummary {
   airDate: string | null;
 }
 
+export interface PlaybackContext {
+  remainingMs: number | null;
+  totalEpisodesInSeason: number | null;
+  remainingEpisodesInSeason: number | null;
+  totalSeasonsInShow: number | null;
+  remainingSeasonsInShow: number | null;
+}
+
+export interface VoiceConfig {
+  enabled: boolean;
+  backend: VoiceBackendMode;
+  assistantId: string;
+  assistantName: string;
+  greetingText: string;
+  processingText: string;
+  acknowledgementText: string;
+  unavailableText: string;
+  greetingAudioUrl: string | null;
+  processingAudioUrl: string | null;
+  acknowledgementAudioUrl: string | null;
+  unavailableAudioUrl: string | null;
+  sttMode: VoiceSttMode;
+  replyMode: VoiceReplyMode;
+}
+
 export interface PlaybackSnapshot {
   sessionId: string | null;
   queueId: string | null;
@@ -72,6 +100,7 @@ export interface PlaybackSnapshot {
   queueLength: number;
   currentQueuePosition: number | null;
   currentItem: PlaybackMediaItem | null;
+  context: PlaybackContext | null;
   streamPath: string | null;
   diagnostics: PlaybackDiagnostics | null;
 }
@@ -177,4 +206,37 @@ export interface PlaybackDiagnosticsUpdateRequest {
   autoplayStatus: PlaybackAutoplayStatus;
   lastEvent: string;
   errorMessage?: string | null;
+}
+
+export interface VoiceTurnRequest {
+  transcript: string;
+  sessionId?: string;
+  playbackState?: ClientPlaybackState;
+  currentItemId?: string | null;
+  currentItemTitle?: string | null;
+  showTitle?: string | null;
+}
+
+export interface VoiceTurnResponse {
+  ok: boolean;
+  enabled: boolean;
+  backend: VoiceBackendMode;
+  assistantId: string;
+  assistantName: string;
+  transcript: string;
+  greetingText: string;
+  replyText: string;
+  acknowledgementText: string | null;
+  processingText: string | null;
+  unavailableText: string;
+  greetingAudioUrl: string | null;
+  processingAudioUrl: string | null;
+  acknowledgementAudioUrl: string | null;
+  unavailableAudioUrl: string | null;
+  replyAudioUrl: string | null;
+  sttMode: VoiceSttMode;
+  replyMode: VoiceReplyMode;
+  resumePlayback: boolean;
+  action: CommandName | "none";
+  playback: PlaybackSnapshot;
 }

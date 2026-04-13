@@ -1,6 +1,6 @@
 ---
 name: clawtv-control
-description: Control ClawTV playback through the repo CLI. Use when an OpenClaw agent needs to check what is on TV, browse the catalog, search titles or series, list shows or collections, inspect recent additions, play something by title, play the latest episode of a series, shuffle a show or collection, or send transport controls like pause, resume, seek, next, refresh, or stop.
+description: Control ClawTV playback through the repo CLI. Use when an OpenClaw agent needs to check what is on TV, browse the catalog, search titles or series, list shows or collections, inspect recent additions, play something by title, play the latest episode of a series, shuffle a show or collection, send transport controls like pause, resume, seek, next, refresh, or stop, or exercise the ClawTV voice API.
 ---
 
 # ClawTV Control
@@ -13,6 +13,9 @@ This skill is only for ClawTV playback and status control. It does not fetch new
 
 Use this skill for requests like:
 - What's on TV right now?
+- How long is left in this movie or episode?
+- How many more episodes are there in this season after this one?
+- How many more seasons are there in this show after this one?
 - What shows do you have?
 - What collections exist?
 - Search for something in the library.
@@ -21,6 +24,7 @@ Use this skill for requests like:
 - Play the latest episode of a show.
 - Shuffle a show or collection.
 - Pause, resume, stop, skip, refresh, or seek playback.
+- Inspect ClawTV voice config or run a voice turn through the server.
 
 ## Workflow
 
@@ -31,7 +35,7 @@ Use this skill for requests like:
 python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py <command> [flags]
 ```
 
-3. Read the JSON result.
+3. Read the returned JSON or text summary, depending on the command.
 4. Report the outcome in plain language.
 
 If the user request is ambiguous, ask one short follow-up question before sending a playback command.
@@ -42,6 +46,12 @@ Check current playback:
 
 ```bash
 python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py now-playing
+```
+
+Check the current playback summary and "what's left" context:
+
+```bash
+python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py now-playing-summary
 ```
 
 Check general server status:
@@ -69,6 +79,19 @@ Inspect recent additions:
 ```bash
 python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py recently-added --limit 10
 python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py recently-added --type movie --limit 10
+```
+
+Inspect voice config:
+
+```bash
+python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py voice-config
+```
+
+Run a voice turn through the ClawTV server:
+
+```bash
+python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py voice-turn --text "how long is left in this?"
+python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py voice-turn --text "pause" --playback-state playing
 ```
 
 Play by title:
@@ -132,7 +155,10 @@ python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py --repo-root /so
 
 ## Notes
 
-- Prefer `now-playing` or `status` first when the user is asking what is currently happening.
+- Prefer `now-playing-summary` when the user is asking how much runtime, how many episodes, or how many seasons are left for the current item.
+- Prefer `voice-turn` when you want to exercise or debug the same server-side voice intent handling the Android TV receiver will use.
+- When `CLAWTV_VOICE_BACKEND=openclaw` is configured on the server, `voice-turn` exercises the live OpenClaw handoff path too.
+- Prefer `now-playing` or `status` first when the user is asking what is currently happening and raw JSON is useful.
 - Prefer `search`, `list-shows`, `list-collections`, or `recently-added` when the user is exploring what ClawTV already has.
 - Prefer `play-latest` when the user asks for "last night's" or "latest" episode of a series.
 - Use `shuffle --show` or `shuffle --collection` only when the user clearly asked for a shuffle-style experience.

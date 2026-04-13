@@ -6,6 +6,9 @@ runtime_home="${CLAWTV_HOME:-${HOME}}"
 support_dir="${runtime_home}/Library/Application Support/ClawTV"
 env_file="${support_dir}/clawtv.env"
 
+# launchd gives us a tiny PATH, but both node and openclaw live under Homebrew.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
 mkdir -p "${support_dir}"
 
 if [[ -f "${env_file}" ]]; then

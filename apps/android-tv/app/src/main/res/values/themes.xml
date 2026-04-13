@@ -3,6 +3,6 @@
     <style name="Theme.ClawTv" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/black</item>
-        <item name="android:windowBackground">@color/clawtv_black</item>
+        <item name="android:windowBackground">@drawable/tv_background</item>
     </style>
 </resources>

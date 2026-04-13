@@ -16,7 +16,10 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -27,6 +30,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import org.json.JSONObject
@@ -43,6 +47,11 @@ import kotlin.math.abs
 class MainActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
     private lateinit var statusOverlay: View
+    private lateinit var statusBackdrop: View
+    private lateinit var statusScrim: View
+    private lateinit var statusCard: LinearLayout
+    private lateinit var statusLogo: ImageView
+    private lateinit var statusBrand: TextView
     private lateinit var statusTitle: TextView
     private lateinit var statusMessage: TextView
     private lateinit var statusNowPlaying: TextView
@@ -66,6 +75,8 @@ class MainActivity : AppCompatActivity() {
     private var pendingUtteranceId: String? = null
     private var pendingUtteranceAction: (() -> Unit)? = null
     private var voiceModeActive = false
+    private var voiceProfile = defaultVoiceProfile()
+    private var voicePlaybackStateBeforeVoice: String? = null
     private var shouldResumeAfterVoice = false
     private var voiceDismissResumePlayback = false
     private var latestTranscript: String? = null
@@ -97,6 +108,11 @@ class MainActivity : AppCompatActivity() {
 
         playerView = findViewById(R.id.player_view)
         statusOverlay = findViewById(R.id.status_overlay)
+        statusBackdrop = findViewById(R.id.status_backdrop)
+        statusScrim = findViewById(R.id.status_scrim)
+        statusCard = findViewById(R.id.status_card)
+        statusLogo = findViewById(R.id.status_logo)
+        statusBrand = findViewById(R.id.status_brand)
         statusTitle = findViewById(R.id.status_title)
         statusMessage = findViewById(R.id.status_message)
         statusNowPlaying = findViewById(R.id.status_now_playing)
@@ -104,15 +120,24 @@ class MainActivity : AppCompatActivity() {
         voiceTitle = findViewById(R.id.voice_title)
         voiceMessage = findViewById(R.id.voice_message)
         voiceTranscript = findViewById(R.id.voice_transcript)
+        applyVoiceProfile(voiceProfile)
+        refreshVoiceProfile()
 
         player = ExoPlayer.Builder(this).build().also { exoPlayer ->
             exoPlayer.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
+                    Log.i(
+                        TAG,
+                        "Playback state changed: ${playbackStateLabel(playbackState)} " +
+                            "playWhenReady=${exoPlayer.playWhenReady} " +
+                            "isPlaying=${exoPlayer.isPlaying} " +
+                            "mediaItem=${exoPlayer.currentMediaItem?.mediaId ?: exoPlayer.currentMediaItem?.localConfiguration?.uri}"
+                    )
                     when (playbackState) {
                         Player.STATE_BUFFERING -> {
                             showOverlay(
                                 title = getString(R.string.status_buffering_title),
-                                message = getString(R.string.status_buffering_message),
+                                mode = OverlayMode.PLAYBACK,
                                 visible = true
                             )
                             reportPlaybackState("loading")
@@ -125,7 +150,7 @@ class MainActivity : AppCompatActivity() {
                             } else {
                                 showOverlay(
                                     title = getString(R.string.status_paused_title),
-                                    message = getString(R.string.status_paused_message),
+                                    mode = OverlayMode.PLAYBACK,
                                     visible = true
                                 )
                                 reportPlaybackState("paused")
@@ -144,16 +169,39 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    Log.i(TAG, "Is playing changed: isPlaying=$isPlaying currentPosition=${exoPlayer.currentPosition}")
                     if (isPlaying) {
                         showOverlay(visible = false)
                         reportPlaybackState("playing")
                     }
                 }
 
+                override fun onIsLoadingChanged(isLoading: Boolean) {
+                    Log.i(TAG, "Is loading changed: isLoading=$isLoading")
+                }
+
+                override fun onRenderedFirstFrame() {
+                    Log.i(TAG, "Rendered first frame at position=${exoPlayer.currentPosition}")
+                }
+
+                override fun onTracksChanged(tracks: Tracks) {
+                    val summaries = tracks.groups.mapIndexed { index, group ->
+                        val type = group.type
+                        val formats = (0 until group.length).joinToString(separator = ",") { formatIndex ->
+                            val format = group.getTrackFormat(formatIndex)
+                            "${format.sampleMimeType ?: "unknown"}:${format.width}x${format.height}:${format.channelCount}"
+                        }
+                        "group=$index type=$type formats=[$formats]"
+                    }
+                    Log.i(TAG, "Tracks changed: ${summaries.joinToString(separator = " | ")}")
+                }
+
                 override fun onPlayerError(error: PlaybackException) {
+                    Log.e(TAG, "Player error code=${error.errorCodeName}", error)
                     showOverlay(
                         title = getString(R.string.status_error_title),
                         message = error.localizedMessage ?: getString(R.string.status_error_message),
+                        mode = OverlayMode.SPLASH,
                         visible = true
                     )
                     reportPlaybackState("error", force = true)
@@ -168,6 +216,8 @@ class MainActivity : AppCompatActivity() {
         showOverlay(
             title = getString(R.string.status_loading_title),
             message = getString(R.string.status_loading_message),
+            mode = OverlayMode.SPLASH,
+            showCard = false,
             visible = true
         )
     }
@@ -278,6 +328,7 @@ class MainActivity : AppCompatActivity() {
                     showOverlay(
                         title = getString(R.string.status_loading_title),
                         message = "Unable to reach ClawTV at ${BuildConfig.CLAWTV_RECEIVER_URL}\n$errorMessage",
+                        mode = OverlayMode.SPLASH,
                         visible = true
                     )
                 }
@@ -295,6 +346,9 @@ class MainActivity : AppCompatActivity() {
         return keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
             || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY
             || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE
+            || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+            || keyCode == KeyEvent.KEYCODE_ENTER
+            || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
             || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD
             || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND
             || keyCode == KeyEvent.KEYCODE_MEDIA_NEXT
@@ -311,7 +365,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleTransportKey(keyCode: Int) {
         when (keyCode) {
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER -> {
                 val commandName = if (currentSnapshot?.playbackState == "playing" || currentSnapshot?.playbackState == "loading") {
                     "pause"
                 } else {
@@ -342,11 +399,21 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        if (!voiceProfile.enabled) {
+            showVoiceOverlay(
+                title = getString(R.string.voice_title_error),
+                message = voiceProfile.unavailableText
+            )
+            scheduleVoiceDismiss(resumePlayback = false, delayMs = 2500L)
+            return
+        }
+
         voiceModeActive = true
         latestTranscript = null
+        voicePlaybackStateBeforeVoice = currentSnapshot?.playbackState
         mainHandler.removeCallbacks(finishVoiceModeRunnable)
         showVoiceOverlay(
-            title = getString(R.string.voice_title_waking),
+            title = getString(R.string.voice_title_waking_format, voiceProfile.assistantName),
             message = getString(R.string.voice_message_waking)
         )
 
@@ -400,25 +467,28 @@ class MainActivity : AppCompatActivity() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             showVoiceOverlay(
                 title = getString(R.string.voice_title_error),
-                message = getString(R.string.voice_message_unavailable)
+                message = voiceProfile.unavailableText
+            )
+            playVoiceCue(
+                audioUrl = voiceProfile.unavailableAudioUrl,
+                clipResId = null,
+                fallbackText = voiceProfile.unavailableText,
+                onComplete = {}
             )
             scheduleVoiceDismiss(resumePlayback = shouldResumeAfterVoice, delayMs = 2500L)
             return
         }
 
-        val playedGreeting = playBundledVoiceClip(
-            clipResId = R.raw.kay_greeting,
+        val playedGreeting = playVoiceCue(
+            audioUrl = voiceProfile.greetingAudioUrl,
+            clipResId = R.raw.voice_greeting,
+            fallbackText = voiceProfile.greetingText,
             onComplete = { startSpeechListening() }
         )
 
-        val spokeGreeting = playedGreeting || speakPhrase(
-            text = "Hey, what's up?",
-            onComplete = { startSpeechListening() }
-        )
-
-        if (!spokeGreeting) {
+        if (!playedGreeting) {
             showVoiceOverlay(
-                title = getString(R.string.voice_title_waking),
+                title = getString(R.string.voice_title_waking_format, voiceProfile.assistantName),
                 message = getString(R.string.voice_message_tts_unavailable)
             )
             mainHandler.postDelayed({ startSpeechListening() }, 400L)
@@ -433,7 +503,7 @@ class MainActivity : AppCompatActivity() {
         val recognizer = getOrCreateSpeechRecognizer() ?: run {
             showVoiceOverlay(
                 title = getString(R.string.voice_title_error),
-                message = getString(R.string.voice_message_unavailable)
+                message = voiceProfile.unavailableText
             )
             scheduleVoiceDismiss(resumePlayback = shouldResumeAfterVoice, delayMs = 2500L)
             return
@@ -483,7 +553,7 @@ class MainActivity : AppCompatActivity() {
                     override fun onEndOfSpeech() {
                         showVoiceOverlay(
                             title = getString(R.string.voice_title_processing),
-                            message = getString(R.string.voice_message_processing),
+                            message = voiceProfile.processingText,
                             transcript = latestTranscript
                         )
                     }
@@ -500,25 +570,7 @@ class MainActivity : AppCompatActivity() {
                     override fun onResults(results: Bundle?) {
                         val transcript = extractTranscript(results)
                         latestTranscript = transcript
-                        showVoiceOverlay(
-                            title = getString(R.string.voice_title_processing),
-                            message = getString(R.string.voice_message_processing),
-                            transcript = transcript
-                        )
-
-                        val playedAck = playBundledVoiceClip(
-                            clipResId = R.raw.kay_ack,
-                            onComplete = { finishVoiceMode(shouldResumeAfterVoice) }
-                        )
-
-                        val spokeAck = playedAck || speakPhrase(
-                            text = "Got it.",
-                            onComplete = { finishVoiceMode(shouldResumeAfterVoice) }
-                        )
-
-                        if (!spokeAck) {
-                            scheduleVoiceDismiss(resumePlayback = shouldResumeAfterVoice, delayMs = 1600L)
-                        }
+                        handleVoiceTranscript(transcript)
                     }
 
                     override fun onPartialResults(partialResults: Bundle?) {
@@ -609,6 +661,64 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun playRemoteVoiceClip(audioUrl: String, onComplete: () -> Unit): Boolean {
+        return runCatching {
+            stopVoicePromptPlayback()
+            val mediaPlayer = MediaPlayer().apply {
+                setDataSource(this@MainActivity, Uri.parse(audioUrl))
+                setOnPreparedListener { preparedPlayer ->
+                    preparedPlayer.start()
+                }
+                setOnCompletionListener { completedPlayer ->
+                    completedPlayer.release()
+                    if (voicePromptPlayer === completedPlayer) {
+                        voicePromptPlayer = null
+                    }
+                    onComplete()
+                }
+                setOnErrorListener { failedPlayer, _, _ ->
+                    failedPlayer.release()
+                    if (voicePromptPlayer === failedPlayer) {
+                        voicePromptPlayer = null
+                    }
+                    onComplete()
+                    true
+                }
+            }
+            voicePromptPlayer = mediaPlayer
+            mediaPlayer.prepareAsync()
+            true
+        }.getOrElse {
+            Log.w(TAG, "Remote voice clip playback failed for url=$audioUrl", it)
+            false
+        }
+    }
+
+    private fun playVoiceCue(
+        audioUrl: String?,
+        clipResId: Int?,
+        fallbackText: String,
+        onComplete: () -> Unit
+    ): Boolean {
+        val playedRemote = audioUrl?.takeIf { it.isNotBlank() }?.let { url ->
+            playRemoteVoiceClip(url, onComplete)
+        } ?: false
+
+        if (playedRemote) {
+            return true
+        }
+
+        val playedBundled = clipResId?.let { resourceId ->
+            playBundledVoiceClip(resourceId, onComplete)
+        } ?: false
+
+        if (playedBundled) {
+            return true
+        }
+
+        return speakPhrase(fallbackText, onComplete)
+    }
+
     private fun stopVoicePromptPlayback() {
         voicePromptPlayer?.runCatching {
             stop()
@@ -647,11 +757,11 @@ class MainActivity : AppCompatActivity() {
     private fun recognitionErrorMessage(error: Int): String {
         return when (error) {
             SpeechRecognizer.ERROR_AUDIO -> "The Shield microphone audio could not be captured."
-            SpeechRecognizer.ERROR_CLIENT -> "ClawTV voice listening was interrupted before Kay could hear you."
+            SpeechRecognizer.ERROR_CLIENT -> "ClawTV voice listening was interrupted before the turn finished."
             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> getString(R.string.voice_message_permission)
             SpeechRecognizer.ERROR_NETWORK,
             SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Speech recognition could not reach its service."
-            SpeechRecognizer.ERROR_NO_MATCH -> "Kay did not catch any speech this time."
+            SpeechRecognizer.ERROR_NO_MATCH -> "I did not catch any speech this time."
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Speech recognition is already busy. Try the mic button again."
             SpeechRecognizer.ERROR_SERVER -> "The speech recognition service returned an error."
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech was heard before the listen window closed."
@@ -671,6 +781,7 @@ class MainActivity : AppCompatActivity() {
         pendingUtteranceAction = null
         stopVoicePromptPlayback()
         voiceModeActive = false
+        voicePlaybackStateBeforeVoice = null
         voiceDismissResumePlayback = false
         latestTranscript = null
         hideVoiceOverlay()
@@ -678,6 +789,112 @@ class MainActivity : AppCompatActivity() {
             sendCommand("resume")
         }
         shouldResumeAfterVoice = false
+    }
+
+    private fun handleVoiceTranscript(transcript: String?) {
+        if (transcript.isNullOrBlank()) {
+            showVoiceOverlay(
+                title = getString(R.string.voice_title_error),
+                message = "I didn't catch that. Please try again."
+            )
+            scheduleVoiceDismiss(resumePlayback = shouldResumeAfterVoice, delayMs = 2000L)
+            return
+        }
+
+        showVoiceOverlay(
+            title = getString(R.string.voice_title_processing),
+            message = voiceProfile.processingText,
+            transcript = transcript
+        )
+        playVoiceCue(
+            audioUrl = voiceProfile.processingAudioUrl,
+            clipResId = null,
+            fallbackText = voiceProfile.processingText,
+            onComplete = {}
+        )
+
+        submitVoiceTurn(transcript)
+    }
+
+    private fun submitVoiceTurn(transcript: String) {
+        worker.execute {
+            val result = runCatching {
+                val response = postJson(
+                    "api/voice/turn",
+                    JSONObject().apply {
+                        put("transcript", transcript)
+                        put("sessionId", currentSnapshot?.sessionId)
+                        put("playbackState", voicePlaybackStateBeforeVoice ?: currentSnapshot?.playbackState ?: "idle")
+                        put("currentItemId", currentSnapshot?.itemId)
+                        put("currentItemTitle", currentSnapshot?.title)
+                        put("showTitle", currentSnapshot?.showTitle)
+                    }
+                )
+
+                parseVoiceTurnResponse(response)
+            }
+
+            if (destroyed) {
+                return@execute
+            }
+
+            result.onFailure { error ->
+                Log.e(TAG, "Failed to complete voice turn", error)
+                runOnUiThread {
+                    showVoiceOverlay(
+                        title = getString(R.string.voice_title_error),
+                        message = error.localizedMessage ?: voiceProfile.unavailableText,
+                        transcript = transcript
+                    )
+                    scheduleVoiceDismiss(resumePlayback = shouldResumeAfterVoice, delayMs = 2500L)
+                }
+            }
+
+            val voiceTurn = result.getOrNull() ?: return@execute
+
+            runOnUiThread {
+                stopVoicePromptPlayback()
+                textToSpeech?.stop()
+                pendingUtteranceId = null
+                pendingUtteranceAction = null
+                applyVoiceProfile(voiceTurn.voiceProfile)
+                applySnapshot(voiceTurn.playback)
+                showVoiceOverlay(
+                    title = getString(R.string.voice_title_replying),
+                    message = voiceTurn.replyText,
+                    transcript = voiceTurn.transcript
+                )
+
+                val onComplete = {
+                    finishVoiceMode(voiceTurn.resumePlayback)
+                }
+
+                val spokeReply = when {
+                    !voiceTurn.replyAudioUrl.isNullOrBlank() -> playVoiceCue(
+                        audioUrl = voiceTurn.replyAudioUrl,
+                        clipResId = null,
+                        fallbackText = voiceTurn.replyText,
+                        onComplete = onComplete
+                    )
+
+                    voiceTurn.replyText == voiceTurn.voiceProfile.acknowledgementText -> playVoiceCue(
+                        audioUrl = voiceTurn.voiceProfile.acknowledgementAudioUrl,
+                        clipResId = R.raw.voice_ack,
+                        fallbackText = voiceTurn.replyText,
+                        onComplete = onComplete
+                    )
+
+                    else -> speakPhrase(
+                        text = voiceTurn.replyText,
+                        onComplete = onComplete
+                    )
+                }
+
+                if (!spokeReply) {
+                    scheduleVoiceDismiss(resumePlayback = voiceTurn.resumePlayback, delayMs = 2500L)
+                }
+            }
+        }
     }
 
     private fun sendCommand(commandName: String, body: JSONObject = JSONObject()) {
@@ -728,19 +945,19 @@ class MainActivity : AppCompatActivity() {
             showOverlay(
                 title = getString(R.string.status_idle_title),
                 message = getString(R.string.status_idle_message),
+                mode = OverlayMode.SPLASH,
+                showCard = false,
                 visible = true
             )
             return
         }
 
-        if (loadedStreamUrl != streamUrl) {
-            loadedStreamUrl = streamUrl
-            lastReportedState = null
-            player.setMediaItem(MediaItem.fromUri(streamUrl))
-            player.prepare()
-            if (snapshot.playbackPositionMs > 0) {
-                player.seekTo(snapshot.playbackPositionMs.toLong())
-            }
+        val shouldReloadStream = loadedStreamUrl != streamUrl
+            || snapshot.receiverCommandType == "refresh"
+            || (snapshot.controlRevisionChanged && snapshot.playbackState == "loading")
+
+        if (shouldReloadStream) {
+            reloadStream(streamUrl, snapshot.playbackPositionMs.toLong())
         } else if (snapshot.controlRevisionChanged && snapshot.playbackPositionMs > 0) {
             val driftMs = abs(player.currentPosition - snapshot.playbackPositionMs.toLong())
             if (driftMs > RESYNC_DRIFT_MS) {
@@ -756,7 +973,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 showOverlay(
                     title = getString(R.string.status_paused_title),
-                    message = getString(R.string.status_paused_message),
+                    mode = OverlayMode.PLAYBACK,
                     visible = true
                 )
             }
@@ -766,7 +983,7 @@ class MainActivity : AppCompatActivity() {
                 if (snapshot.playbackState == "loading") {
                     showOverlay(
                         title = getString(R.string.status_buffering_title),
-                        message = getString(R.string.status_buffering_message),
+                        mode = OverlayMode.PLAYBACK,
                         visible = true
                     )
                 }
@@ -775,6 +992,19 @@ class MainActivity : AppCompatActivity() {
             else -> {
                 player.playWhenReady = false
             }
+        }
+    }
+
+    private fun reloadStream(streamUrl: String, playbackPositionMs: Long) {
+        Log.i(TAG, "Reloading stream url=$streamUrl playbackPositionMs=$playbackPositionMs")
+        loadedStreamUrl = streamUrl
+        lastReportedState = null
+        player.stop()
+        player.clearMediaItems()
+        player.setMediaItem(MediaItem.fromUri(streamUrl))
+        player.prepare()
+        if (playbackPositionMs > 0) {
+            player.seekTo(playbackPositionMs)
         }
     }
 
@@ -864,8 +1094,8 @@ class MainActivity : AppCompatActivity() {
         return URL(URL(receiverUri.toString()), path).toString()
     }
 
-    private fun resolveStreamUrl(streamPath: String, currentItemId: String): String {
-        val resolved = Uri.parse(URL(URL(receiverUri.toString()), streamPath).toString())
+    private fun resolveDirectStreamUrl(currentItemId: String): String {
+        val resolved = Uri.parse(URL(URL(receiverUri.toString()), "api/playback/stream/current").toString())
         return resolved.buildUpon()
             .appendQueryParameter("currentItemId", currentItemId)
             .build()
@@ -886,10 +1116,12 @@ class MainActivity : AppCompatActivity() {
             playbackPositionMs = payload.optInt("playbackPositionMs", 0),
             controlRevision = controlRevision,
             controlRevisionChanged = currentSnapshot?.controlRevision != controlRevision,
+            itemId = itemId,
             title = currentItem?.optString("title")?.takeIf { it.isNotEmpty() },
             showTitle = currentItem?.optString("showTitle")?.takeIf { it.isNotEmpty() },
             receiverCommandId = receiverCommand?.optString("id")?.takeIf { it.isNotEmpty() },
-            streamUrl = if (itemId != null && streamPath != null) resolveStreamUrl(streamPath, itemId) else null
+            receiverCommandType = receiverCommand?.optString("type")?.takeIf { it.isNotEmpty() },
+            streamUrl = if (itemId != null && streamPath != null) resolveDirectStreamUrl(itemId) else null
         )
     }
 
@@ -912,22 +1144,144 @@ class MainActivity : AppCompatActivity() {
 
     private fun hideVoiceOverlay() {
         voiceOverlay.visibility = View.GONE
-        voiceTitle.text = getString(R.string.voice_title_idle)
-        voiceMessage.text = getString(R.string.voice_message_idle)
+        voiceTitle.text = getString(R.string.voice_title_idle_format, voiceProfile.assistantName)
+        voiceMessage.text = getString(R.string.voice_message_idle_format, voiceProfile.assistantName)
         voiceTranscript.text = ""
+    }
+
+    private fun refreshVoiceProfile() {
+        worker.execute {
+            runCatching {
+                parseVoiceProfile(requestJson("api/voice/config"))
+            }.onSuccess { profile ->
+                if (destroyed) {
+                    return@onSuccess
+                }
+
+                runOnUiThread {
+                    applyVoiceProfile(profile)
+                }
+            }.onFailure { error ->
+                Log.w(TAG, "Falling back to local voice profile", error)
+            }
+        }
+    }
+
+    private fun applyVoiceProfile(profile: VoiceProfile) {
+        voiceProfile = profile
+        statusBrand.text = getString(R.string.app_name)
+        val brandText = getString(R.string.voice_brand_format, profile.assistantName)
+        val idleTitle = getString(R.string.voice_title_idle_format, profile.assistantName)
+        val idleMessage = getString(R.string.voice_message_idle_format, profile.assistantName)
+        findViewById<TextView>(R.id.voice_brand).text = brandText
+        if (!voiceModeActive) {
+            voiceTitle.text = idleTitle
+            voiceMessage.text = idleMessage
+        }
+    }
+
+    private fun defaultVoiceProfile(): VoiceProfile {
+        return VoiceProfile(
+            enabled = BuildConfig.CLAWTV_VOICE_ENABLED,
+            backend = "mock",
+            assistantId = BuildConfig.CLAWTV_VOICE_ASSISTANT_ID,
+            assistantName = BuildConfig.CLAWTV_VOICE_ASSISTANT_NAME,
+            greetingText = BuildConfig.CLAWTV_VOICE_GREETING_TEXT,
+            processingText = BuildConfig.CLAWTV_VOICE_PROCESSING_TEXT,
+            acknowledgementText = BuildConfig.CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT,
+            unavailableText = BuildConfig.CLAWTV_VOICE_UNAVAILABLE_TEXT,
+            greetingAudioUrl = null,
+            processingAudioUrl = null,
+            acknowledgementAudioUrl = null,
+            unavailableAudioUrl = null
+        )
+    }
+
+    private fun parseVoiceProfile(payload: JSONObject): VoiceProfile {
+        return VoiceProfile(
+            enabled = payload.optBoolean("enabled", BuildConfig.CLAWTV_VOICE_ENABLED),
+            backend = payload.optString("backend", "mock").ifBlank { "mock" },
+            assistantId = payload.optString("assistantId", BuildConfig.CLAWTV_VOICE_ASSISTANT_ID).ifBlank {
+                BuildConfig.CLAWTV_VOICE_ASSISTANT_ID
+            },
+            assistantName = payload.optString("assistantName", BuildConfig.CLAWTV_VOICE_ASSISTANT_NAME).ifBlank {
+                BuildConfig.CLAWTV_VOICE_ASSISTANT_NAME
+            },
+            greetingText = payload.optString("greetingText", BuildConfig.CLAWTV_VOICE_GREETING_TEXT).ifBlank {
+                BuildConfig.CLAWTV_VOICE_GREETING_TEXT
+            },
+            processingText = payload.optString("processingText", BuildConfig.CLAWTV_VOICE_PROCESSING_TEXT).ifBlank {
+                BuildConfig.CLAWTV_VOICE_PROCESSING_TEXT
+            },
+            acknowledgementText = payload.optString("acknowledgementText", BuildConfig.CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT).ifBlank {
+                BuildConfig.CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT
+            },
+            unavailableText = payload.optString("unavailableText", BuildConfig.CLAWTV_VOICE_UNAVAILABLE_TEXT).ifBlank {
+                BuildConfig.CLAWTV_VOICE_UNAVAILABLE_TEXT
+            },
+            greetingAudioUrl = payload.optString("greetingAudioUrl").takeIf { it.isNotBlank() },
+            processingAudioUrl = payload.optString("processingAudioUrl").takeIf { it.isNotBlank() },
+            acknowledgementAudioUrl = payload.optString("acknowledgementAudioUrl").takeIf { it.isNotBlank() },
+            unavailableAudioUrl = payload.optString("unavailableAudioUrl").takeIf { it.isNotBlank() }
+        )
+    }
+
+    private fun parseVoiceTurnResponse(payload: JSONObject): VoiceTurnResult {
+        val profile = parseVoiceProfile(payload)
+        val playbackPayload = payload.optJSONObject("playback") ?: JSONObject()
+
+        return VoiceTurnResult(
+            voiceProfile = profile,
+            transcript = payload.optString("transcript").ifBlank { latestTranscript.orEmpty() },
+            replyText = payload.optString("replyText").ifBlank {
+                profile.acknowledgementText
+            },
+            replyAudioUrl = payload.optString("replyAudioUrl").takeIf { it.isNotBlank() },
+            resumePlayback = payload.optBoolean("resumePlayback", shouldResumeAfterVoice),
+            action = payload.optString("action").ifBlank { "none" },
+            playback = parsePlaybackSnapshot(playbackPayload)
+        )
     }
 
     private fun showOverlay(
         title: String = "",
         message: String = "",
+        mode: OverlayMode = OverlayMode.SPLASH,
+        showCard: Boolean = true,
         visible: Boolean
     ) {
         statusOverlay.visibility = if (visible) View.VISIBLE else View.GONE
+        val playbackMode = mode == OverlayMode.PLAYBACK
+        val cardVisible = visible && showCard
+        statusBackdrop.visibility = if (playbackMode) View.GONE else View.VISIBLE
+        statusScrim.visibility = if (visible && playbackMode) View.VISIBLE else View.GONE
+        statusCard.visibility = if (cardVisible) View.VISIBLE else View.GONE
+        statusLogo.visibility = if (cardVisible && !playbackMode) View.VISIBLE else View.GONE
+        statusBrand.visibility = if (cardVisible && !playbackMode) View.VISIBLE else View.GONE
+        statusMessage.visibility = if (cardVisible && !playbackMode && message.isNotBlank()) View.VISIBLE else View.GONE
+        statusNowPlaying.visibility = if (cardVisible && !playbackMode) View.VISIBLE else View.GONE
+        val verticalPadding = if (playbackMode) dpToPx(40) else dpToPx(28)
+        statusCard.setPadding(
+            statusCard.paddingLeft,
+            verticalPadding,
+            statusCard.paddingRight,
+            verticalPadding
+        )
+        (statusTitle.layoutParams as? ViewGroup.MarginLayoutParams)?.let { params ->
+            params.topMargin = if (playbackMode) 0 else dpToPx(16)
+            statusTitle.layoutParams = params
+        }
         statusTitle.text = title
         statusMessage.text = message
         if (!visible) {
             statusNowPlaying.text = currentSnapshot?.let { listOfNotNull(it.showTitle, it.title).joinToString(" - ") } ?: ""
+        } else if (!playbackMode) {
+            statusNowPlaying.text = currentSnapshot?.let { listOfNotNull(it.showTitle, it.title).joinToString(" - ") } ?: ""
         }
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        return (dp * resources.displayMetrics.density).toInt()
     }
 
     companion object {
@@ -938,7 +1292,22 @@ class MainActivity : AppCompatActivity() {
         private const val RESYNC_DRIFT_MS = 5_000L
         private const val SEEK_BACK_MS = 10_000
         private const val SEEK_FORWARD_MS = 30_000
+
+        private fun playbackStateLabel(playbackState: Int): String {
+            return when (playbackState) {
+                Player.STATE_IDLE -> "IDLE"
+                Player.STATE_BUFFERING -> "BUFFERING"
+                Player.STATE_READY -> "READY"
+                Player.STATE_ENDED -> "ENDED"
+                else -> "UNKNOWN($playbackState)"
+            }
+        }
     }
+}
+
+private enum class OverlayMode {
+    SPLASH,
+    PLAYBACK
 }
 
 private data class PlaybackSnapshotPayload(
@@ -947,8 +1316,35 @@ private data class PlaybackSnapshotPayload(
     val playbackPositionMs: Int,
     val controlRevision: Int,
     val controlRevisionChanged: Boolean,
+    val itemId: String?,
     val title: String?,
     val showTitle: String?,
     val receiverCommandId: String?,
+    val receiverCommandType: String?,
     val streamUrl: String?
+)
+
+private data class VoiceProfile(
+    val enabled: Boolean,
+    val backend: String,
+    val assistantId: String,
+    val assistantName: String,
+    val greetingText: String,
+    val processingText: String,
+    val acknowledgementText: String,
+    val unavailableText: String,
+    val greetingAudioUrl: String?,
+    val processingAudioUrl: String?,
+    val acknowledgementAudioUrl: String?,
+    val unavailableAudioUrl: String?
+)
+
+private data class VoiceTurnResult(
+    val voiceProfile: VoiceProfile,
+    val transcript: String,
+    val replyText: String,
+    val replyAudioUrl: String?,
+    val resumePlayback: Boolean,
+    val action: String,
+    val playback: PlaybackSnapshotPayload
 )

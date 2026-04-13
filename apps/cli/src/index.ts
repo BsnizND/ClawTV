@@ -7,11 +7,15 @@ import type {
   CatalogShowListResponse,
   CommandName,
   CommandResult,
+  PlaybackContext,
   PlaybackSnapshot,
   SeekCommandRequest,
   ServerStatus,
   SyncRequest,
-  SyncRunSummary
+  SyncRunSummary,
+  VoiceConfig,
+  VoiceTurnRequest,
+  VoiceTurnResponse
 } from "@clawtv/contracts";
 import { DEFAULT_BASE_PATH, resolveRelativeUrl } from "@clawtv/core";
 
@@ -40,6 +44,37 @@ async function main(): Promise<void> {
     if (rawCommand === "now-playing") {
       const playback = await getJson<PlaybackSnapshot>("api/playback/current");
       console.log(JSON.stringify(playback, null, 2));
+      return;
+    }
+
+    if (rawCommand === "now-playing-summary") {
+      const playback = await getJson<PlaybackSnapshot>("api/playback/current");
+      console.log(formatPlaybackSummary(playback));
+      return;
+    }
+
+    if (rawCommand === "voice-config") {
+      const config = await getJson<VoiceConfig>("api/voice/config");
+      console.log(JSON.stringify(config, null, 2));
+      return;
+    }
+
+    if (rawCommand === "voice-turn") {
+      const payload = parseVoiceTurnFlags(restArgs);
+      if (!payload.transcript) {
+        throw new Error("voice-turn requires --text \"...\"");
+      }
+
+      const playback = await getJson<PlaybackSnapshot>("api/playback/current");
+      const result = await postJson<VoiceTurnResponse>("api/voice/turn", {
+        transcript: payload.transcript,
+        sessionId: playback.sessionId ?? undefined,
+        playbackState: payload.playbackState ?? playback.playbackState,
+        currentItemId: playback.currentItem?.id ?? null,
+        currentItemTitle: playback.currentItem?.title ?? null,
+        showTitle: playback.currentItem?.showTitle ?? null
+      } satisfies VoiceTurnRequest);
+      console.log(JSON.stringify(result, null, 2));
       return;
     }
 
@@ -128,6 +163,9 @@ Usage:
   clawtv status
   clawtv sessions
   clawtv now-playing
+  clawtv now-playing-summary
+  clawtv voice-config
+  clawtv voice-turn --text "how long is left in this?"
   clawtv search --query "john oliver" [--type episode]
   clawtv list-shows [--limit 20]
   clawtv list-collections [--limit 20]
@@ -186,6 +224,17 @@ function parseCatalogFlags(args: string[]): {
   };
 }
 
+function parseVoiceTurnFlags(args: string[]): {
+  transcript?: string;
+  playbackState?: PlaybackSnapshot["playbackState"];
+} {
+  const flags = parseKeyValueFlags(args);
+  return {
+    transcript: flags.text ?? flags.transcript,
+    playbackState: parsePlaybackState(flags["playback-state"])
+  };
+}
+
 function isCommandName(value: string): value is CommandName {
   return [
     "play",
@@ -225,6 +274,17 @@ function parseSeekFlags(args: string[]): SeekCommandRequest {
 
 function parseCatalogMediaType(value: string | undefined): CatalogMediaTypeFilter | undefined {
   return value === "show" || value === "season" || value === "episode" || value === "movie"
+    ? value
+    : undefined;
+}
+
+function parsePlaybackState(value: string | undefined): PlaybackSnapshot["playbackState"] | undefined {
+  return value === "booting"
+    || value === "idle"
+    || value === "loading"
+    || value === "playing"
+    || value === "paused"
+    || value === "error"
     ? value
     : undefined;
 }
@@ -317,6 +377,82 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+function formatPlaybackSummary(playback: PlaybackSnapshot): string {
+  if (!playback.currentItem) {
+    return playback.playbackState === "idle"
+      ? "Nothing is currently playing."
+      : `Nothing is currently playing. Receiver state: ${playback.playbackState}.`;
+  }
+
+  const item = playback.currentItem;
+  const titleParts = [item.showTitle, formatEpisodeTag(item), item.title].filter(Boolean);
+  const lines = [
+    `Now playing: ${titleParts.join(" - ") || item.title}`,
+    `State: ${playback.playbackState}`
+  ];
+  const remainingRuntime = formatRemainingRuntime(playback.context, item.durationMs, playback.playbackPositionMs);
+
+  if (remainingRuntime) {
+    lines.push(`Time left: ${remainingRuntime}`);
+  }
+
+  if (item.mediaType === "episode") {
+    if (typeof playback.context?.remainingEpisodesInSeason === "number") {
+      lines.push(`More episodes after this one in this season: ${playback.context.remainingEpisodesInSeason}`);
+    }
+
+    if (typeof playback.context?.remainingSeasonsInShow === "number") {
+      lines.push(`More seasons after this one in this show: ${playback.context.remainingSeasonsInShow}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function formatEpisodeTag(item: PlaybackSnapshot["currentItem"]): string | null {
+  if (!item || item.mediaType !== "episode") {
+    return null;
+  }
+
+  if (typeof item.seasonNumber === "number" && typeof item.episodeNumber === "number") {
+    return `S${String(item.seasonNumber).padStart(2, "0")}E${String(item.episodeNumber).padStart(2, "0")}`;
+  }
+
+  return null;
+}
+
+function formatRemainingRuntime(
+  context: PlaybackContext | null,
+  durationMs: number | null,
+  playbackPositionMs: number
+): string | null {
+  const remainingMs = context?.remainingMs
+    ?? (typeof durationMs === "number" ? Math.max(durationMs - playbackPositionMs, 0) : null);
+
+  if (typeof remainingMs !== "number") {
+    return null;
+  }
+
+  return formatDuration(remainingMs);
+}
+
+function formatDuration(valueMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(valueMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+
+  return `${seconds}s`;
 }
 
 void main();

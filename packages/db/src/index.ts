@@ -164,6 +164,11 @@ interface PlaybackSnapshotRow {
   season_number: number | null;
   episode_number: number | null;
   air_date: string | null;
+  remaining_ms: number | null;
+  total_episodes_in_season: number | null;
+  remaining_episodes_in_season: number | null;
+  total_seasons_in_show: number | null;
+  remaining_seasons_in_show: number | null;
 }
 
 interface ShowSummaryRow {
@@ -325,15 +330,16 @@ export class ClawTvDatabase {
         playbackState: "idle",
         playbackPositionMs: 0,
         controlRevision: 0,
-        receiverCommand: null,
-        updatedAt: null,
-        queueLength: 0,
-        currentQueuePosition: null,
-        currentItem: null,
-        streamPath: null,
-        diagnostics: null
-      };
-    }
+      receiverCommand: null,
+      updatedAt: null,
+      queueLength: 0,
+      currentQueuePosition: null,
+      currentItem: null,
+      context: null,
+      streamPath: null,
+      diagnostics: null
+    };
+  }
 
     const row = this.db.prepare(`
       SELECT
@@ -362,7 +368,47 @@ export class ClawTvDatabase {
         mi.thumb_url,
         COALESCE(episode_season.season_number, season.season_number) AS season_number,
         e.episode_number,
-        e.air_date
+        e.air_date,
+        CASE
+          WHEN mi.duration_ms IS NULL THEN NULL
+          WHEN mi.duration_ms - ps.playback_position_ms < 0 THEN 0
+          ELSE mi.duration_ms - ps.playback_position_ms
+        END AS remaining_ms,
+        CASE
+          WHEN e.season_id IS NULL THEN NULL
+          ELSE (
+            SELECT COUNT(*)
+            FROM episodes season_episode
+            WHERE season_episode.season_id = e.season_id
+          )
+        END AS total_episodes_in_season,
+        CASE
+          WHEN e.season_id IS NULL OR e.episode_number IS NULL THEN NULL
+          ELSE (
+            SELECT COUNT(*)
+            FROM episodes season_episode
+            WHERE season_episode.season_id = e.season_id
+              AND season_episode.episode_number > e.episode_number
+          )
+        END AS remaining_episodes_in_season,
+        CASE
+          WHEN COALESCE(e.show_id, season.show_id) IS NULL THEN NULL
+          ELSE (
+            SELECT COUNT(*)
+            FROM seasons show_season
+            WHERE show_season.show_id = COALESCE(e.show_id, season.show_id)
+          )
+        END AS total_seasons_in_show,
+        CASE
+          WHEN COALESCE(e.show_id, season.show_id) IS NULL
+            OR COALESCE(episode_season.season_number, season.season_number) IS NULL THEN NULL
+          ELSE (
+            SELECT COUNT(*)
+            FROM seasons show_season
+            WHERE show_season.show_id = COALESCE(e.show_id, season.show_id)
+              AND show_season.season_number > COALESCE(episode_season.season_number, season.season_number)
+          )
+        END AS remaining_seasons_in_show
       FROM playback_state ps
       LEFT JOIN queue_items current_qi ON current_qi.id = ps.current_queue_item_id
       LEFT JOIN (
@@ -391,6 +437,7 @@ export class ClawTvDatabase {
         queueLength: 0,
         currentQueuePosition: null,
         currentItem: null,
+        context: null,
         streamPath: null,
         diagnostics: null
       };
@@ -428,6 +475,15 @@ export class ClawTvDatabase {
             seasonNumber: row.season_number,
             episodeNumber: row.episode_number,
             airDate: row.air_date
+          }
+        : null,
+      context: row.id
+        ? {
+            remainingMs: row.remaining_ms,
+            totalEpisodesInSeason: row.total_episodes_in_season,
+            remainingEpisodesInSeason: row.remaining_episodes_in_season,
+            totalSeasonsInShow: row.total_seasons_in_show,
+            remainingSeasonsInShow: row.remaining_seasons_in_show
           }
         : null,
       streamPath: null,

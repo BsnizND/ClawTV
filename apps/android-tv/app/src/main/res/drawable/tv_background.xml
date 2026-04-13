@@ -2,27 +2,24 @@
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@color/clawtv_black" />
     <item>
+        <bitmap
+            android:antialias="true"
+            android:filter="true"
+            android:gravity="fill"
+            android:src="@drawable/clawtv_brand_art" />
+    </item>
+    <item>
         <shape android:shape="rectangle">
-            <gradient
-                android:angle="315"
-                android:centerColor="#3A1D14"
-                android:endColor="#050505"
-                android:startColor="#1A120D" />
+            <solid android:color="#26000000" />
         </shape>
     </item>
-    <item
-        android:gravity="top|center_horizontal"
-        android:top="-180dp">
-        <shape android:shape="oval">
-            <size
-                android:width="880dp"
-                android:height="880dp" />
+    <item>
+        <shape android:shape="rectangle">
             <gradient
-                android:centerColor="#88FF8C54"
-                android:endColor="#00FF8C54"
-                android:gradientRadius="440dp"
-                android:startColor="#CCFFE0B7"
-                android:type="radial" />
+                android:angle="270"
+                android:centerColor="#1A050505"
+                android:endColor="#B3050505"
+                android:startColor="#73050505" />
         </shape>
     </item>
 </layer-list>

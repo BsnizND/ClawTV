@@ -11,22 +11,42 @@
         android:background="@android:color/black"
         android:keepScreenOn="true" />
 
-    <LinearLayout
+    <FrameLayout
         android:id="@+id/status_overlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="@drawable/tv_background"
-        android:gravity="center"
-        android:orientation="vertical"
-        android:padding="48dp">
+        android:visibility="visible">
+
+        <View
+            android:id="@+id/status_backdrop"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/tv_background" />
+
+        <View
+            android:id="@+id/status_scrim"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#66000000"
+            android:visibility="gone" />
 
         <LinearLayout
+            android:id="@+id/status_card"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_gravity="center"
             android:background="@drawable/status_card_background"
             android:gravity="center_horizontal"
             android:orientation="vertical"
             android:padding="28dp">
+
+            <ImageView
+                android:id="@+id/status_logo"
+                android:layout_width="88dp"
+                android:layout_height="88dp"
+                android:contentDescription="@null"
+                android:scaleType="centerCrop"
+                android:src="@drawable/ic_clawtv_brand" />
 
             <TextView
                 android:id="@+id/status_brand"
@@ -44,6 +64,8 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:includeFontPadding="false"
                 android:text="@string/status_loading_title"
                 android:textColor="@color/clawtv_text_primary"
                 android:textSize="34sp"
@@ -68,7 +90,7 @@
                 android:textColor="@color/clawtv_text_secondary"
                 android:textSize="16sp" />
         </LinearLayout>
-    </LinearLayout>
+    </FrameLayout>
 
     <LinearLayout
         android:id="@+id/voice_overlay"
@@ -88,13 +110,20 @@
             android:orientation="vertical"
             android:padding="28dp">
 
+            <ImageView
+                android:layout_width="88dp"
+                android:layout_height="88dp"
+                android:contentDescription="@null"
+                android:scaleType="centerCrop"
+                android:src="@drawable/ic_clawtv_brand" />
+
             <TextView
                 android:id="@+id/voice_brand"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:alpha="0.72"
                 android:letterSpacing="0.12"
-                android:text="@string/voice_brand"
+                android:text="@string/voice_brand_default"
                 android:textAllCaps="true"
                 android:textColor="@color/clawtv_text_secondary"
                 android:textSize="14sp" />
@@ -104,7 +133,8 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="16dp"
-                android:text="@string/voice_title_idle"
+                android:includeFontPadding="false"
+                android:text="@string/voice_title_idle_default"
                 android:textColor="@color/clawtv_text_primary"
                 android:textSize="34sp"
                 android:textStyle="bold" />
@@ -115,7 +145,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="14dp"
                 android:gravity="center"
-                android:text="@string/voice_message_idle"
+                android:text="@string/voice_message_idle_default"
                 android:textColor="@color/clawtv_text_secondary"
                 android:textSize="18sp" />
 

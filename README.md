@@ -36,6 +36,7 @@ Today it supports:
 - playback state persistence
 - transport controls like pause, resume, seek, next, stop, and refresh
 - catalog browsing with `search`, `list-shows`, `list-collections`, and `recently-added`
+- a first-pass voice API with configurable assistant identity, OpenClaw handoff support, and server-served cue packs
 - a native Android TV receiver using `Media3`
 
 ## Architecture In One Sentence
@@ -60,12 +61,30 @@ export CLAWTV_SERVER_ORIGIN=http://localhost:8787/ClawTV/
 export CLAWTV_DATA_DIR=./data
 export PLEX_BASE_URL=http://127.0.0.1:32400/
 export PLEX_TOKEN=your-plex-token
+export CLAWTV_VOICE_ENABLED=true
+export CLAWTV_VOICE_BACKEND=openclaw
+export CLAWTV_VOICE_ASSISTANT_NAME=Assistant
+export CLAWTV_VOICE_ASSISTANT_ID=default-assistant
+export CLAWTV_VOICE_GREETING_TEXT="Hey, what can I do for you?"
+export CLAWTV_VOICE_PROCESSING_TEXT="Looking into it."
+export CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT="Got it."
+export CLAWTV_VOICE_UNAVAILABLE_TEXT="Voice chat is not available right now."
+export CLAWTV_VOICE_AUDIO_PACK=default
+export CLAWTV_OPENCLAW_AGENT_ID=jay
+export CLAWTV_OPENCLAW_THINKING=minimal
+export CLAWTV_OPENCLAW_TIMEOUT_SECONDS=90
+export ELEVENLABS_API_KEY=your-elevenlabs-api-key
+export ELEVENLABS_VOICE_ID=your-elevenlabs-voice-id
+export ELEVENLABS_MODEL_ID=eleven_flash_v2_5
 ```
 
 ## CLI Examples
 
 ```bash
 pnpm --filter @clawtv/cli dev now-playing
+pnpm --filter @clawtv/cli dev now-playing-summary
+pnpm --filter @clawtv/cli dev voice-config
+pnpm --filter @clawtv/cli dev voice-turn --text "how long is left in this?"
 pnpm --filter @clawtv/cli dev search --query "john oliver" --type episode
 pnpm --filter @clawtv/cli dev list-shows --limit 20
 pnpm --filter @clawtv/cli dev recently-added --type movie --limit 10
@@ -85,6 +104,8 @@ The repo ships an installable skill under `skills/clawtv-control`.
 That skill gives an OpenClaw agent a stable way to:
 
 - inspect current playback and server status
+- answer "what's left?" questions about the currently playing movie or episode
+- exercise the same voice API the Android TV receiver now uses
 - browse the synced library
 - search titles or series
 - play, shuffle, pause, resume, seek, skip, refresh, and stop
@@ -95,9 +116,23 @@ The Android TV app under `apps/android-tv` is intentionally thin:
 
 - it polls the ClawTV server for playback state
 - it plays the assigned HLS stream with native `Media3`
+- it captures first-pass mic transcripts on-device and hands them to the ClawTV voice API
 - it does not own queue logic or library browsing
+
+## Voice
+
+The repo now has a generic, configurable voice path instead of a hard-coded assistant identity.
+
+- Android TV captures first-pass STT with `SpeechRecognizer`
+- the receiver loads assistant config from `GET /api/voice/config`
+- voice turns post to `POST /api/voice/turn`
+- the server can answer playback questions directly, hand general conversation turns to OpenClaw, and serve pre-rendered cue audio from `assets/voice`
+- when ElevenLabs credentials are configured, reply audio can be cached and streamed back to the TV instead of relying on client TTS
+
+The rollout plan for the full live assistant loop is in [docs/voice-roadmap.md](docs/voice-roadmap.md).
 
 ## Docs
 
 - [Technical Architecture](docs/technical-architecture.md)
 - [Deployment Notes](docs/deployment.md)
+- [Voice Roadmap](docs/voice-roadmap.md)

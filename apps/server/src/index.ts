@@ -1,7 +1,10 @@
-import { readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, join, normalize } from "node:path";
+import { extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import type {
   CatalogMediaTypeFilter,
@@ -9,6 +12,10 @@ import type {
   CommandName,
   PlaybackDiagnostics,
   PlaybackDiagnosticsUpdateRequest,
+  PlaybackSnapshot,
+  VoiceConfig,
+  VoiceTurnRequest,
+  VoiceTurnResponse,
   PlaybackStateUpdateRequest,
   SyncMode
 } from "@clawtv/contracts";
@@ -17,9 +24,13 @@ import { openClawTvDatabase } from "@clawtv/db";
 import { syncPlexCatalog } from "@clawtv/plex-sync";
 
 const rootDir = fileURLToPath(new URL("../../..", import.meta.url));
+const serverDataDir = process.env.CLAWTV_DATA_DIR ?? join(rootDir, "data");
+const voiceAssetDir = join(rootDir, "assets", "voice");
+const voiceCacheDir = join(serverDataDir, "voice-cache");
 const port = Number(process.env.PORT ?? 8787);
 const basePath = normalizeBasePath(process.env.CLAWTV_BASE_PATH ?? DEFAULT_BASE_PATH) || DEFAULT_BASE_PATH;
 const webDistDir = join(rootDir, "apps", "web", "dist");
+const execFileAsync = promisify(execFile);
 const db = openClawTvDatabase({
   rootDir,
   dataDir: process.env.CLAWTV_DATA_DIR,
@@ -31,6 +42,8 @@ let activeHlsSession: {
   plexRatingKey: string;
   mediaPlaylistUrl: string;
 } | null = null;
+
+mkdirSync(voiceCacheDir, { recursive: true });
 
 process.on("SIGINT", () => {
   db.close();
@@ -65,6 +78,23 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "GET" && routePath === "/api/status") {
     sendJson(response, 200, db.getStatus());
+    return;
+  }
+
+  if (request.method === "GET" && routePath === "/api/voice/config") {
+    sendJson(response, 200, buildVoiceConfig());
+    return;
+  }
+
+  if ((request.method === "GET" || request.method === "HEAD") && routePath.startsWith("/api/voice/audio/")) {
+    const served = serveVoiceAudio(routePath, request.method === "HEAD", response);
+
+    if (!served) {
+      sendJson(response, 404, {
+        ok: false,
+        error: `No voice audio route for ${routePath}`
+      });
+    }
     return;
   }
 
@@ -138,7 +168,10 @@ const server = createServer(async (request, response) => {
     }
   }
 
-  if ((request.method === "GET" || request.method === "HEAD") && routePath === "/api/playback/hls/proxy") {
+  if (
+    (request.method === "GET" || request.method === "HEAD")
+    && (routePath === "/api/playback/hls/proxy" || routePath.startsWith("/api/playback/hls/proxy."))
+  ) {
     const encodedUpstream = requestUrl.searchParams.get("upstream");
 
     if (!encodedUpstream || !plexToken) {
@@ -224,6 +257,23 @@ const server = createServer(async (request, response) => {
     });
 
     sendJson(response, 200, buildPlaybackSnapshot());
+    return;
+  }
+
+  if (request.method === "POST" && routePath === "/api/voice/turn") {
+    const body = (await readJsonBody(request)) as unknown as VoiceTurnRequest;
+    const voiceConfig = buildVoiceConfig();
+
+    if (!voiceConfig.enabled) {
+      sendJson(response, 503, {
+        ok: false,
+        error: "Voice is disabled on this ClawTV server.",
+        config: voiceConfig
+      });
+      return;
+    }
+
+    sendJson(response, 200, await buildVoiceTurnResponse(body, voiceConfig));
     return;
   }
 
@@ -530,6 +580,15 @@ function toRoutePath(pathname: string): string {
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown): void {
+  if (response.destroyed || response.writableEnded) {
+    return;
+  }
+
+  if (response.headersSent) {
+    response.end();
+    return;
+  }
+
   response.writeHead(statusCode, {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET,POST,OPTIONS",
@@ -564,6 +623,489 @@ function buildPlaybackSnapshot() {
     streamPath: snapshot.currentItem ? withBasePath(basePath, "/api/playback/hls/current.m3u8") : null,
     diagnostics: latestPlaybackDiagnostics
   };
+}
+
+function buildVoiceConfig(): VoiceConfig {
+  const backend = resolveVoiceBackend();
+  const replyMode = resolveVoiceReplyMode();
+
+  return {
+    enabled: parseBooleanEnv(process.env.CLAWTV_VOICE_ENABLED, true),
+    backend,
+    assistantId: process.env.CLAWTV_VOICE_ASSISTANT_ID?.trim() || "default-assistant",
+    assistantName: process.env.CLAWTV_VOICE_ASSISTANT_NAME?.trim() || "Assistant",
+    greetingText: process.env.CLAWTV_VOICE_GREETING_TEXT?.trim() || "Hey, what can I do for you?",
+    processingText: process.env.CLAWTV_VOICE_PROCESSING_TEXT?.trim() || "Looking into it.",
+    acknowledgementText: process.env.CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT?.trim() || "Got it.",
+    unavailableText: process.env.CLAWTV_VOICE_UNAVAILABLE_TEXT?.trim() || "Voice chat is not available right now.",
+    greetingAudioUrl: pickVoiceCueUrl("greeting"),
+    processingAudioUrl: pickVoiceCueUrl("processing"),
+    acknowledgementAudioUrl: pickVoiceCueUrl("acknowledgement"),
+    unavailableAudioUrl: pickVoiceCueUrl("unavailable"),
+    sttMode: "shield",
+    replyMode
+  };
+}
+
+async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: VoiceConfig): Promise<VoiceTurnResponse> {
+  const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
+  const normalizedTranscript = transcript.toLowerCase();
+  const playbackBefore = buildPlaybackSnapshot();
+  const shouldResumeOriginalPlayback = body.playbackState === "playing" || body.playbackState === "loading";
+  let action: VoiceTurnResponse["action"] = "none";
+  let replyText = "";
+
+  if (!transcript) {
+    replyText = "I didn't catch that. Please try again.";
+  } else if (matchesVoiceCommand(normalizedTranscript, ["pause", "hold on", "stop playback"])) {
+    action = "pause";
+    const result = db.applyCommand({
+      commandName: "pause",
+      payload: {},
+      source: "voice"
+    });
+    replyText = result.message;
+  } else if (matchesVoiceCommand(normalizedTranscript, ["resume", "keep going", "continue playback"])) {
+    action = "resume";
+    const result = db.applyCommand({
+      commandName: "resume",
+      payload: {},
+      source: "voice"
+    });
+    replyText = result.message;
+  } else if (matchesVoiceCommand(normalizedTranscript, ["next", "skip this"])) {
+    action = "next";
+    const result = db.applyCommand({
+      commandName: "next",
+      payload: {},
+      source: "voice"
+    });
+    replyText = result.message;
+  } else if (matchesVoiceCommand(normalizedTranscript, ["stop", "turn it off"])) {
+    action = "stop";
+    const result = db.applyCommand({
+      commandName: "stop",
+      payload: {},
+      source: "voice"
+    });
+    replyText = result.message;
+  } else if (asksForRemainingTime(normalizedTranscript)) {
+    replyText = describeRemainingRuntime(playbackBefore);
+  } else if (asksForRemainingEpisodes(normalizedTranscript)) {
+    replyText = describeRemainingEpisodes(playbackBefore);
+  } else if (asksForRemainingSeasons(normalizedTranscript)) {
+    replyText = describeRemainingSeasons(playbackBefore);
+  } else if (asksWhatIsPlaying(normalizedTranscript)) {
+    replyText = describeNowPlaying(playbackBefore);
+  } else {
+    replyText = await buildConversationalReply({
+      transcript,
+      playback: playbackBefore,
+      voiceConfig
+    });
+  }
+
+  const playbackAfter = buildPlaybackSnapshot();
+  const replyAudioUrl = await synthesizeVoiceReplyAudio(replyText);
+  const replyMode = replyAudioUrl ? "server-audio" : voiceConfig.replyMode;
+
+  return {
+    ok: true,
+    enabled: voiceConfig.enabled,
+    backend: voiceConfig.backend,
+    assistantId: voiceConfig.assistantId,
+    assistantName: voiceConfig.assistantName,
+    transcript,
+    greetingText: voiceConfig.greetingText,
+    replyText,
+    acknowledgementText: voiceConfig.acknowledgementText,
+    processingText: voiceConfig.processingText,
+    unavailableText: voiceConfig.unavailableText,
+    greetingAudioUrl: voiceConfig.greetingAudioUrl,
+    processingAudioUrl: voiceConfig.processingAudioUrl,
+    acknowledgementAudioUrl: voiceConfig.acknowledgementAudioUrl,
+    unavailableAudioUrl: voiceConfig.unavailableAudioUrl,
+    replyAudioUrl,
+    sttMode: voiceConfig.sttMode,
+    replyMode,
+    resumePlayback: action === "none" && shouldResumeOriginalPlayback,
+    action,
+    playback: playbackAfter
+  };
+}
+
+async function buildConversationalReply(input: {
+  transcript: string;
+  playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
+  voiceConfig: VoiceConfig;
+}): Promise<string> {
+  if (input.voiceConfig.backend === "openclaw") {
+    const openClawReply = await runOpenClawVoiceTurn(input);
+    if (openClawReply) {
+      return openClawReply;
+    }
+  }
+
+  return `I heard: "${input.transcript}". The live assistant handoff is not available right now, but the voice turn plumbing is ready.`;
+}
+
+async function runOpenClawVoiceTurn(input: {
+  transcript: string;
+  playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
+  voiceConfig: VoiceConfig;
+}): Promise<string | null> {
+  const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
+  const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || "jay";
+  const thinking = process.env.CLAWTV_OPENCLAW_THINKING?.trim() || "minimal";
+  const timeoutSeconds = Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90);
+  const prompt = buildOpenClawPrompt(input);
+
+  try {
+    const { stdout } = await execFileAsync(command, [
+      "agent",
+      "--agent",
+      agentId,
+      "--message",
+      prompt,
+      "--thinking",
+      thinking,
+      "--timeout",
+      String(Number.isFinite(timeoutSeconds) ? timeoutSeconds : 90),
+      "--json"
+    ], {
+      maxBuffer: 2 * 1024 * 1024
+    });
+
+    return extractOpenClawReplyText(stdout);
+  } catch (error) {
+    console.warn("OpenClaw voice handoff failed", error);
+    return null;
+  }
+}
+
+function buildOpenClawPrompt(input: {
+  transcript: string;
+  playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
+  voiceConfig: VoiceConfig;
+}): string {
+  const playbackSummary = describePlaybackContextForPrompt(input.playback);
+
+  return [
+    `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
+    "Reply in natural spoken language for TV playback voice chat.",
+    "Keep the response concise, warm, and under two short sentences unless the question truly needs more.",
+    "Do not mention OpenClaw, prompts, JSON, transport, or implementation details.",
+    "If the user asks about what is currently on, remaining runtime, remaining episodes, or remaining seasons, use the supplied playback context only.",
+    "If the user asks for something you cannot verify from the supplied playback context, answer helpfully but briefly.",
+    `Current playback context: ${playbackSummary}`,
+    `User said: ${input.transcript}`
+  ].join(" ");
+}
+
+function describePlaybackContextForPrompt(snapshot: PlaybackSnapshot): string {
+  if (!snapshot.currentItem) {
+    return "Nothing is currently playing.";
+  }
+
+  const parts = [
+    `State: ${snapshot.playbackState}`,
+    `Title: ${snapshot.currentItem.title}`,
+    snapshot.currentItem.showTitle ? `Show: ${snapshot.currentItem.showTitle}` : null,
+    formatEpisodeLabel(snapshot.currentItem.seasonNumber, snapshot.currentItem.episodeNumber)
+      ? `Episode: ${formatEpisodeLabel(snapshot.currentItem.seasonNumber, snapshot.currentItem.episodeNumber)}`
+      : null,
+    typeof snapshot.context?.remainingMs === "number" ? `Remaining runtime: ${formatDuration(snapshot.context.remainingMs)}` : null,
+    typeof snapshot.context?.remainingEpisodesInSeason === "number"
+      ? `Episodes remaining in this season after this one: ${snapshot.context.remainingEpisodesInSeason}`
+      : null,
+    typeof snapshot.context?.remainingSeasonsInShow === "number"
+      ? `Seasons remaining after this one: ${snapshot.context.remainingSeasonsInShow}`
+      : null
+  ].filter((value): value is string => Boolean(value));
+
+  return parts.join(" | ");
+}
+
+function extractOpenClawReplyText(stdout: string): string | null {
+  try {
+    const payload = JSON.parse(stdout) as {
+      result?: {
+        payloads?: Array<{
+          text?: string | null;
+        }>;
+      };
+    };
+
+    const text = payload.result?.payloads
+      ?.map((entry) => entry.text?.trim())
+      .filter((entry): entry is string => Boolean(entry))
+      .join("\n\n");
+
+    return text && text.length > 0 ? text : null;
+  } catch (error) {
+    console.warn("Unable to parse OpenClaw agent JSON output", error);
+    return null;
+  }
+}
+
+function resolveVoiceBackend(): VoiceConfig["backend"] {
+  const configured = process.env.CLAWTV_VOICE_BACKEND?.trim().toLowerCase();
+  return configured === "openclaw" ? "openclaw" : "mock";
+}
+
+function resolveVoiceReplyMode(): VoiceConfig["replyMode"] {
+  return isElevenLabsConfigured() ? "server-audio" : "client-tts";
+}
+
+async function synthesizeVoiceReplyAudio(text: string): Promise<string | null> {
+  if (!text.trim() || !isElevenLabsConfigured()) {
+    return null;
+  }
+
+  const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
+  const voiceId = process.env.ELEVENLABS_VOICE_ID?.trim();
+  const modelId = process.env.ELEVENLABS_MODEL_ID?.trim() || "eleven_flash_v2_5";
+
+  if (!apiKey || !voiceId) {
+    return null;
+  }
+
+  const replyDir = join(voiceCacheDir, "replies");
+  mkdirSync(replyDir, { recursive: true });
+
+  const cacheKey = createHash("sha256")
+    .update(JSON.stringify({ voiceId, modelId, text }))
+    .digest("hex");
+  const fileName = `${cacheKey}.mp3`;
+  const filePath = join(replyDir, fileName);
+
+  if (!existsSync(filePath)) {
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
+      method: "POST",
+      headers: {
+        Accept: "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": apiKey
+      },
+      body: JSON.stringify({
+        text,
+        model_id: modelId
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.warn(`ElevenLabs synthesis failed with status ${response.status}: ${errorText}`);
+      return null;
+    }
+
+    const audioBuffer = Buffer.from(await response.arrayBuffer());
+    writeFileSync(filePath, audioBuffer);
+  }
+
+  return withBasePath(basePath, `/api/voice/audio/replies/${encodeURIComponent(fileName)}`);
+}
+
+function isElevenLabsConfigured(): boolean {
+  return Boolean(process.env.ELEVENLABS_API_KEY?.trim() && process.env.ELEVENLABS_VOICE_ID?.trim());
+}
+
+function pickVoiceCueUrl(category: "greeting" | "processing" | "acknowledgement" | "unavailable"): string | null {
+  const pack = process.env.CLAWTV_VOICE_AUDIO_PACK?.trim() || "default";
+  const categoryDir = join(voiceAssetDir, pack, category);
+
+  if (!existsSync(categoryDir)) {
+    return null;
+  }
+
+  const files = readdirSync(categoryDir)
+    .filter((fileName) => isAudioFile(fileName))
+    .sort();
+
+  if (files.length === 0) {
+    return null;
+  }
+
+  const selectedFile = files[Math.floor(Math.random() * files.length)] ?? files[0];
+  return withBasePath(
+    basePath,
+    `/api/voice/audio/packs/${encodeURIComponent(pack)}/${encodeURIComponent(category)}/${encodeURIComponent(selectedFile)}`
+  );
+}
+
+function isAudioFile(fileName: string): boolean {
+  return [".mp3", ".m4a", ".wav", ".aiff", ".aac"].includes(extname(fileName).toLowerCase());
+}
+
+function serveVoiceAudio(routePath: string, headOnly: boolean, response: ServerResponse): boolean {
+  if (routePath.startsWith("/api/voice/audio/replies/")) {
+    const fileName = decodeURIComponent(routePath.replace("/api/voice/audio/replies/", ""));
+    return serveFileFromRoot(join(voiceCacheDir, "replies"), fileName, headOnly, response);
+  }
+
+  if (routePath.startsWith("/api/voice/audio/packs/")) {
+    const parts = routePath.replace("/api/voice/audio/packs/", "").split("/").map((part) => decodeURIComponent(part));
+    const [pack, category, ...rest] = parts;
+    const fileName = rest.join("/");
+
+    if (!pack || !category || !fileName) {
+      return false;
+    }
+
+    return serveFileFromRoot(join(voiceAssetDir, pack, category), fileName, headOnly, response);
+  }
+
+  return false;
+}
+
+function serveFileFromRoot(root: string, relativeFilePath: string, headOnly: boolean, response: ServerResponse): boolean {
+  const assetPath = resolveSafeAssetPath(root, relativeFilePath);
+
+  if (!assetPath || !existsSync(assetPath)) {
+    return false;
+  }
+
+  response.writeHead(200, {
+    "cache-control": "public, max-age=31536000, immutable",
+    "content-type": contentTypeFor(assetPath)
+  });
+
+  if (headOnly) {
+    response.end();
+    return true;
+  }
+
+  response.end(readFileSync(assetPath));
+  return true;
+}
+
+function matchesVoiceCommand(transcript: string, phrases: string[]): boolean {
+  return phrases.some((phrase) => transcript.includes(phrase));
+}
+
+function asksForRemainingTime(transcript: string): boolean {
+  return transcript.includes("how long is left")
+    || transcript.includes("how much is left")
+    || transcript.includes("time left")
+    || transcript.includes("how much longer")
+    || transcript.includes("when is this over");
+}
+
+function asksForRemainingEpisodes(transcript: string): boolean {
+  return transcript.includes("how many more episodes")
+    || transcript.includes("episodes left in this season")
+    || transcript.includes("episodes are there in this season after this one");
+}
+
+function asksForRemainingSeasons(transcript: string): boolean {
+  return transcript.includes("how many more seasons")
+    || transcript.includes("seasons left after this one")
+    || transcript.includes("seasons are there in this show after this one");
+}
+
+function asksWhatIsPlaying(transcript: string): boolean {
+  return transcript.includes("what's on")
+    || transcript.includes("what is on")
+    || transcript.includes("what are we watching")
+    || transcript.includes("what is playing");
+}
+
+function describeNowPlaying(snapshot: ReturnType<typeof buildPlaybackSnapshot>): string {
+  if (!snapshot.currentItem) {
+    return "Nothing is currently playing.";
+  }
+
+  const titleParts = [
+    snapshot.currentItem.showTitle,
+    formatEpisodeLabel(snapshot.currentItem.seasonNumber, snapshot.currentItem.episodeNumber),
+    snapshot.currentItem.title
+  ].filter((value): value is string => Boolean(value));
+
+  return `Right now it's ${titleParts.join(" - ")}.`;
+}
+
+function describeRemainingRuntime(snapshot: ReturnType<typeof buildPlaybackSnapshot>): string {
+  if (!snapshot.currentItem) {
+    return "Nothing is currently playing.";
+  }
+
+  const remainingMs = snapshot.context?.remainingMs;
+  if (typeof remainingMs !== "number") {
+    return `I don't have a remaining runtime for ${snapshot.currentItem.title}.`;
+  }
+
+  return `${snapshot.currentItem.title} has ${formatDuration(remainingMs)} left.`;
+}
+
+function describeRemainingEpisodes(snapshot: ReturnType<typeof buildPlaybackSnapshot>): string {
+  if (!snapshot.currentItem || snapshot.currentItem.mediaType !== "episode") {
+    return "That question only makes sense for a TV episode.";
+  }
+
+  const remainingEpisodes = snapshot.context?.remainingEpisodesInSeason;
+  if (typeof remainingEpisodes !== "number") {
+    return `I don't have episode counts for ${snapshot.currentItem.title}.`;
+  }
+
+  return remainingEpisodes === 0
+    ? "This is the last episode left in the current season."
+    : `There ${remainingEpisodes === 1 ? "is" : "are"} ${remainingEpisodes} more ${remainingEpisodes === 1 ? "episode" : "episodes"} in this season after this one.`;
+}
+
+function describeRemainingSeasons(snapshot: ReturnType<typeof buildPlaybackSnapshot>): string {
+  if (!snapshot.currentItem || snapshot.currentItem.mediaType !== "episode") {
+    return "That question only makes sense for a TV episode.";
+  }
+
+  const remainingSeasons = snapshot.context?.remainingSeasonsInShow;
+  if (typeof remainingSeasons !== "number") {
+    return `I don't have season counts for ${snapshot.currentItem.title}.`;
+  }
+
+  return remainingSeasons === 0
+    ? "There are no more seasons after this one."
+    : `There ${remainingSeasons === 1 ? "is" : "are"} ${remainingSeasons} more ${remainingSeasons === 1 ? "season" : "seasons"} after this one.`;
+}
+
+function formatEpisodeLabel(seasonNumber: number | null, episodeNumber: number | null): string | null {
+  if (typeof seasonNumber !== "number" || typeof episodeNumber !== "number") {
+    return null;
+  }
+
+  return `S${String(seasonNumber).padStart(2, "0")}E${String(episodeNumber).padStart(2, "0")}`;
+}
+
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours} hour${hours === 1 ? "" : "s"}, ${minutes} minute${minutes === 1 ? "" : "s"}, and ${seconds} second${seconds === 1 ? "" : "s"}`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes} minute${minutes === 1 ? "" : "s"} and ${seconds} second${seconds === 1 ? "" : "s"}`;
+  }
+
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
+function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes") {
+    return true;
+  }
+
+  if (value === "0" || value.toLowerCase() === "false" || value.toLowerCase() === "no") {
+    return false;
+  }
+
+  return fallback;
 }
 
 function buildProxyHeaders(response: Response): Record<string, string> {
@@ -861,10 +1403,15 @@ function rewriteHlsPlaylistLine(line: string, upstreamUrl: URL): string {
 
 function buildHlsProxyUrl(targetUrl: URL): string {
   const sanitizedUrl = new URL(targetUrl.toString());
+  const extension = extname(sanitizedUrl.pathname);
 
   sanitizedUrl.searchParams.delete("X-Plex-Token");
 
-  return withBasePath(basePath, `/api/playback/hls/proxy?upstream=${encodeURIComponent(encodeProxyTarget(sanitizedUrl.toString()))}`);
+  const proxyPath = extension
+    ? `/api/playback/hls/proxy${extension}`
+    : "/api/playback/hls/proxy";
+
+  return withBasePath(basePath, `${proxyPath}?upstream=${encodeURIComponent(encodeProxyTarget(sanitizedUrl.toString()))}`);
 }
 
 function appendPlexToken(sourceUrl: string, token: string, plexBaseUrl: string): string {
@@ -908,10 +1455,9 @@ function serveStaticAsset(requestPath: string, response: ServerResponse): boolea
   const relativePath = routePath === "/"
     ? "index.html"
     : routePath.replace(/^\/+/u, "");
-  const normalizedPath = normalize(relativePath).replace(/^(\.\.(\/|\\|$))+/, "");
-  const assetPath = join(webDistDir, normalizedPath);
+  const assetPath = resolveSafeAssetPath(webDistDir, relativePath);
 
-  if (!assetPath.startsWith(webDistDir) || !existsSync(assetPath)) {
+  if (!assetPath || !existsSync(assetPath)) {
     const indexPath = join(webDistDir, "index.html");
 
     if (existsSync(indexPath) && !relativePath.includes(".")) {
@@ -928,6 +1474,18 @@ function serveStaticAsset(requestPath: string, response: ServerResponse): boolea
   });
   response.end(readFileSync(assetPath));
   return true;
+}
+
+function resolveSafeAssetPath(root: string, relativeFilePath: string): string | null {
+  const safeRoot = resolve(root);
+  const candidatePath = resolve(safeRoot, normalize(relativeFilePath));
+  const relativePath = relative(safeRoot, candidatePath);
+
+  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
+    return null;
+  }
+
+  return candidatePath;
 }
 
 function contentTypeFor(filePath: string): string {
@@ -951,6 +1509,26 @@ function contentTypeFor(filePath: string): string {
 
   if (extension === ".svg") {
     return "image/svg+xml";
+  }
+
+  if (extension === ".mp3") {
+    return "audio/mpeg";
+  }
+
+  if (extension === ".m4a") {
+    return "audio/mp4";
+  }
+
+  if (extension === ".wav") {
+    return "audio/wav";
+  }
+
+  if (extension === ".aiff" || extension === ".aif") {
+    return "audio/aiff";
+  }
+
+  if (extension === ".aac") {
+    return "audio/aac";
   }
 
   return "application/octet-stream";
