@@ -11,12 +11,14 @@ export interface PlexSyncOptions {
   token: string;
   mode: SyncMode;
   library?: string;
+  lastSuccessfulSyncAt?: string | null;
 }
 
 interface PlexSection {
   key: string;
   title: string;
   type: string;
+  refreshing: boolean;
 }
 
 interface PlexMediaContainerResponse {
@@ -27,13 +29,7 @@ interface PlexMediaContainerResponse {
 }
 
 export async function syncPlexCatalog(options: PlexSyncOptions): Promise<CatalogSyncPayload> {
-  const sectionsResponse = await plexFetch<PlexMediaContainerResponse>(options, "library/sections");
-  const allSections = (sectionsResponse.MediaContainer?.Directory ?? [])
-    .map(mapSection)
-    .filter((section): section is PlexSection => Boolean(section));
-  const sections = options.library
-    ? allSections.filter((section) => section.title.toLowerCase() === options.library?.toLowerCase())
-    : allSections;
+  const sections = await listPlexSections(options);
 
   const libraries: CatalogLibraryRecord[] = [];
   const mediaItemsById = new Map<string, CatalogMediaItemRecord>();
@@ -49,25 +45,19 @@ export async function syncPlexCatalog(options: PlexSyncOptions): Promise<Catalog
       updatedAt: new Date().toISOString()
     });
 
-    const itemsResponse = await plexFetch<PlexMediaContainerResponse>(options, `library/sections/${section.key}/all`);
-    const rawItems = itemsResponse.MediaContainer?.Metadata ?? [];
-
-    rawItems.forEach((rawItem) => {
-      const mapped = mapMediaItem(libraryId, rawItem, options);
-
-      if (mapped) {
-        mediaItemsById.set(mapped.id, mapped);
-      }
-    });
-
-    if (section.type === "show") {
-      await hydrateShowSectionChildren({
+    const rawItems = isIncrementalSync(options)
+      ? await fetchIncrementalSectionItems({
         options,
+        section,
         libraryId,
-        rawShows: rawItems,
+        mediaItemsById
+      })
+      : await fetchFullSectionItems({
+        options,
+        section,
+        libraryId,
         mediaItemsById
       });
-    }
 
     const collectionsResponse = await plexFetch<PlexMediaContainerResponse>(options, `library/sections/${section.key}/collections`);
     const rawCollections = collectionsResponse.MediaContainer?.Metadata ?? [];
@@ -96,8 +86,225 @@ function mapSection(rawSection: Record<string, unknown>): PlexSection | null {
   return {
     key: rawSection.key,
     title: rawSection.title,
-    type: rawSection.type
+    type: rawSection.type,
+    refreshing: asBoolean(rawSection.refreshing)
   };
+}
+
+export async function triggerPlexLibraryScan(options: PlexSyncOptions): Promise<PlexSection[]> {
+  const sections = await listPlexSections(options);
+
+  for (const section of sections) {
+    const url = buildPlexRequestUrl(options, `library/sections/${section.key}/refresh`);
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Plex request failed with status ${response.status} for ${url.pathname}`);
+    }
+  }
+
+  return sections;
+}
+
+export async function waitForPlexLibraryScan(options: PlexSyncOptions, input?: {
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}): Promise<PlexSection[]> {
+  const timeoutMs = input?.timeoutMs ?? 30_000;
+  const pollIntervalMs = input?.pollIntervalMs ?? 1_000;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() <= deadline) {
+    const sections = await listPlexSections(options);
+
+    if (sections.every((section) => !section.refreshing)) {
+      return sections;
+    }
+
+    await sleep(pollIntervalMs);
+  }
+
+  throw new Error(`Timed out waiting for Plex library scan after ${timeoutMs}ms.`);
+}
+
+async function listPlexSections(options: PlexSyncOptions): Promise<PlexSection[]> {
+  const sectionsResponse = await plexFetch<PlexMediaContainerResponse>(options, "library/sections");
+  const allSections = (sectionsResponse.MediaContainer?.Directory ?? [])
+    .map(mapSection)
+    .filter((section): section is PlexSection => Boolean(section));
+
+  return options.library
+    ? allSections.filter((section) => section.title.toLowerCase() === options.library?.toLowerCase())
+    : allSections;
+}
+
+async function fetchFullSectionItems(input: {
+  options: PlexSyncOptions;
+  section: PlexSection;
+  libraryId: string;
+  mediaItemsById: Map<string, CatalogMediaItemRecord>;
+}): Promise<Array<Record<string, unknown>>> {
+  const itemsResponse = await plexFetch<PlexMediaContainerResponse>(
+    input.options,
+    `library/sections/${input.section.key}/all`
+  );
+  const rawItems = itemsResponse.MediaContainer?.Metadata ?? [];
+
+  rawItems.forEach((rawItem) => {
+    const mapped = mapMediaItem(input.libraryId, rawItem, input.options);
+
+    if (mapped) {
+      input.mediaItemsById.set(mapped.id, mapped);
+    }
+  });
+
+  if (input.section.type === "show") {
+    await hydrateShowSectionChildren({
+      options: input.options,
+      libraryId: input.libraryId,
+      rawShows: rawItems,
+      mediaItemsById: input.mediaItemsById
+    });
+  }
+
+  return rawItems;
+}
+
+async function fetchIncrementalSectionItems(input: {
+  options: PlexSyncOptions;
+  section: PlexSection;
+  libraryId: string;
+  mediaItemsById: Map<string, CatalogMediaItemRecord>;
+}): Promise<Array<Record<string, unknown>>> {
+  const recentPath = `library/sections/${input.section.key}/recentlyAdded?X-Plex-Container-Start=0&X-Plex-Container-Size=200`;
+  const itemsResponse = await plexFetch<PlexMediaContainerResponse>(
+    input.options,
+    recentPath
+  );
+  const rawItems = (itemsResponse.MediaContainer?.Metadata ?? []).filter((rawItem) => {
+    const since = input.options.lastSuccessfulSyncAt;
+
+    if (!since) {
+      return true;
+    }
+
+    const cutoffMs = Date.parse(since);
+    const updatedAt = asUnixTimestamp(rawItem.updatedAt);
+    const addedAt = asUnixTimestamp(rawItem.addedAt);
+    const candidateMs = Date.parse(updatedAt ?? addedAt ?? "");
+
+    return Number.isFinite(candidateMs) && candidateMs >= cutoffMs;
+  });
+
+  if (input.section.type !== "show") {
+    rawItems.forEach((rawItem) => {
+      const mapped = mapMediaItem(input.libraryId, rawItem, input.options);
+
+      if (mapped) {
+        input.mediaItemsById.set(mapped.id, mapped);
+      }
+    });
+
+    return rawItems;
+  }
+
+  const hydratedShowIds = new Set<string>();
+  const hydratedSeasonIds = new Set<string>();
+  const sectionItems: Array<Record<string, unknown>> = [];
+
+  for (const rawItem of rawItems) {
+    const mapped = mapMediaItem(input.libraryId, rawItem, input.options);
+
+    if (mapped) {
+      input.mediaItemsById.set(mapped.id, mapped);
+      sectionItems.push(rawItem);
+    }
+
+    const itemType = asString(rawItem.type);
+    const ratingKey = asString(rawItem.ratingKey);
+    const parentRatingKey = asString(rawItem.parentRatingKey);
+    const grandparentRatingKey = asString(rawItem.grandparentRatingKey);
+
+    if (itemType === "show" && ratingKey && !hydratedShowIds.has(ratingKey)) {
+      hydratedShowIds.add(ratingKey);
+      const showMetadata = await fetchMetadataItem(input.options, ratingKey);
+
+      if (showMetadata) {
+        const mappedShow = mapMediaItem(input.libraryId, showMetadata, input.options);
+
+        if (mappedShow) {
+          input.mediaItemsById.set(mappedShow.id, mappedShow);
+        }
+
+        await hydrateShowSectionChildren({
+          options: input.options,
+          libraryId: input.libraryId,
+          rawShows: [showMetadata],
+          mediaItemsById: input.mediaItemsById
+        });
+      }
+      continue;
+    }
+
+    if (parentRatingKey && !hydratedSeasonIds.has(parentRatingKey)) {
+      hydratedSeasonIds.add(parentRatingKey);
+      const seasonMetadata = await fetchMetadataItem(input.options, parentRatingKey);
+
+      if (seasonMetadata) {
+        const mappedSeason = mapMediaItem(input.libraryId, seasonMetadata, input.options);
+
+        if (mappedSeason) {
+          input.mediaItemsById.set(mappedSeason.id, mappedSeason);
+        }
+
+        const seasonChildren = await plexFetch<PlexMediaContainerResponse>(
+          input.options,
+          `library/metadata/${parentRatingKey}/children`
+        );
+        const rawEpisodes = [
+          ...(seasonChildren.MediaContainer?.Directory ?? []),
+          ...(seasonChildren.MediaContainer?.Metadata ?? [])
+        ];
+
+        rawEpisodes.forEach((rawEpisode) => {
+          const mappedEpisode = mapMediaItem(input.libraryId, rawEpisode, input.options);
+
+          if (mappedEpisode) {
+            input.mediaItemsById.set(mappedEpisode.id, mappedEpisode);
+          }
+        });
+      }
+    }
+
+    const showRatingKey = itemType === "show" ? ratingKey : grandparentRatingKey ?? parentRatingKey;
+
+    if (showRatingKey && !hydratedShowIds.has(showRatingKey)) {
+      hydratedShowIds.add(showRatingKey);
+      const showMetadata = await fetchMetadataItem(input.options, showRatingKey);
+
+      if (showMetadata) {
+        const mappedShow = mapMediaItem(input.libraryId, showMetadata, input.options);
+
+        if (mappedShow) {
+          input.mediaItemsById.set(mappedShow.id, mappedShow);
+        }
+      }
+    }
+  }
+
+  return sectionItems;
+}
+
+async function fetchMetadataItem(
+  options: PlexSyncOptions,
+  ratingKey: string
+): Promise<Record<string, unknown> | null> {
+  const metadataResponse = await plexFetch<PlexMediaContainerResponse>(options, `library/metadata/${ratingKey}`);
+  return (metadataResponse.MediaContainer?.Metadata ?? [])[0] ?? null;
 }
 
 async function hydrateShowSectionChildren(input: {
@@ -163,6 +370,10 @@ async function hydrateShowSectionChildren(input: {
       });
     }
   }
+}
+
+function isIncrementalSync(options: PlexSyncOptions): boolean {
+  return options.mode === "incremental-sync" && Boolean(options.lastSuccessfulSyncAt);
 }
 
 function mapMediaItem(
@@ -250,8 +461,7 @@ function mapCollection(
 }
 
 async function plexFetch<T>(options: PlexSyncOptions, path: string): Promise<T> {
-  const url = new URL(path.replace(/^\/+/u, ""), ensureTrailingSlash(options.baseUrl));
-  url.searchParams.set("X-Plex-Token", options.token);
+  const url = buildPlexRequestUrl(options, path);
   const redactedUrl = redactPlexToken(url);
   const maxAttempts = 4;
   let lastError: Error | null = null;
@@ -281,6 +491,12 @@ async function plexFetch<T>(options: PlexSyncOptions, path: string): Promise<T> 
   }
 
   throw lastError ?? new Error(`Plex fetch failed for ${redactedUrl}`);
+}
+
+function buildPlexRequestUrl(options: PlexSyncOptions, path: string): URL {
+  const url = new URL(path.replace(/^\/+/u, ""), ensureTrailingSlash(options.baseUrl));
+  url.searchParams.set("X-Plex-Token", options.token);
+  return url;
 }
 
 function ensureTrailingSlash(value: string): string {
@@ -330,6 +546,22 @@ function asNumber(value: unknown): number | null {
   }
 
   return null;
+}
+
+function asBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+
+  if (typeof value === "string") {
+    return value === "1" || value.toLowerCase() === "true";
+  }
+
+  return false;
 }
 
 function asNullableNumber(value: unknown): number | null {

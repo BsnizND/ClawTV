@@ -96,6 +96,8 @@ export interface RecordSyncRunInput {
   status: SyncStatus;
   librariesSynced: number;
   mediaItemsSynced: number;
+  startedAt?: string;
+  finishedAt?: string | null;
   errorMessage?: string | null;
 }
 
@@ -340,6 +342,42 @@ export class ClawTvDatabase {
       status: row.status,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
+      durationMs: calculateDurationMs(row.started_at, row.finished_at),
+      librariesSynced: row.libraries_synced,
+      mediaItemsSynced: row.media_items_synced,
+      errorMessage: row.error_message
+    };
+  }
+
+  getLatestSuccessfulSyncRun(): SyncRunSummary | null {
+    const row = this.db.prepare(`
+      SELECT id, mode, status, started_at, finished_at, libraries_synced, media_items_synced, error_message
+      FROM sync_runs
+      WHERE status = 'success'
+      ORDER BY started_at DESC
+      LIMIT 1
+    `).get() as {
+      id: string;
+      mode: SyncMode;
+      status: SyncStatus;
+      started_at: string;
+      finished_at: string | null;
+      libraries_synced: number;
+      media_items_synced: number;
+      error_message: string | null;
+    } | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      id: row.id,
+      mode: row.mode,
+      status: row.status,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+      durationMs: calculateDurationMs(row.started_at, row.finished_at),
       librariesSynced: row.libraries_synced,
       mediaItemsSynced: row.media_items_synced,
       errorMessage: row.error_message
@@ -1197,7 +1235,8 @@ export class ClawTvDatabase {
 
   applyCatalogSync(payload: CatalogSyncPayload, syncRun: RecordSyncRunInput): SyncRunSummary {
     const syncRunId = randomUUID();
-    const startedAt = new Date().toISOString();
+    const startedAt = syncRun.startedAt ?? new Date().toISOString();
+    const finishedAt = syncRun.finishedAt ?? new Date().toISOString();
 
     this.db.exec("BEGIN");
 
@@ -1231,7 +1270,7 @@ export class ClawTvDatabase {
         mode: syncRun.mode,
         status: syncRun.status,
         startedAt,
-        finishedAt: startedAt,
+        finishedAt,
         librariesSynced: syncRun.librariesSynced,
         mediaItemsSynced: syncRun.mediaItemsSynced,
         errorMessage: syncRun.errorMessage ?? null,
@@ -1447,7 +1486,8 @@ export class ClawTvDatabase {
 
   recordFailedSyncRun(syncRun: RecordSyncRunInput): SyncRunSummary {
     const id = randomUUID();
-    const finishedAt = new Date().toISOString();
+    const finishedAt = syncRun.finishedAt ?? new Date().toISOString();
+    const startedAt = syncRun.startedAt ?? finishedAt;
 
     this.db.prepare(`
       INSERT INTO sync_runs (
@@ -1475,7 +1515,7 @@ export class ClawTvDatabase {
       id,
       mode: syncRun.mode,
       status: syncRun.status,
-      startedAt: finishedAt,
+      startedAt,
       finishedAt,
       librariesSynced: syncRun.librariesSynced,
       mediaItemsSynced: syncRun.mediaItemsSynced,
@@ -2302,6 +2342,21 @@ function clampCatalogLimit(value: number | undefined): number {
   }
 
   return Math.max(1, Math.min(50, Math.round(value)));
+}
+
+function calculateDurationMs(startedAt: string, finishedAt: string | null): number | null {
+  if (!finishedAt) {
+    return null;
+  }
+
+  const startedMs = Date.parse(startedAt);
+  const finishedMs = Date.parse(finishedAt);
+
+  if (!Number.isFinite(startedMs) || !Number.isFinite(finishedMs)) {
+    return null;
+  }
+
+  return Math.max(0, finishedMs - startedMs);
 }
 
 function formatPlaybackPosition(positionMs: number): string {

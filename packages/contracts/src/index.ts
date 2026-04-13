@@ -188,6 +188,7 @@ export interface SyncRunSummary {
   status: SyncStatus;
   startedAt: string;
   finishedAt: string | null;
+  durationMs: number | null;
   librariesSynced: number;
   mediaItemsSynced: number;
   errorMessage: string | null;
@@ -196,6 +197,19 @@ export interface SyncRunSummary {
 export interface SyncRequest {
   mode: SyncMode;
   library?: string;
+}
+
+export interface CheckNewContentRequest {
+  library?: string;
+  limit?: number;
+}
+
+export interface CheckNewContentResponse {
+  ok: boolean;
+  scanTriggered: boolean;
+  library: string | null;
+  syncRun: SyncRunSummary;
+  items: MediaItemSummary[];
 }
 
 export interface PlaybackStateUpdateRequest {

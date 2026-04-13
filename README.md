@@ -32,6 +32,7 @@ ClawTV combines four pieces:
 Today it supports:
 
 - Plex-backed catalog sync
+- automatic periodic incremental sync plus a manual "check for new content" path
 - server-proxied HLS playback
 - playback state persistence
 - transport controls like pause, resume, seek, next, stop, and refresh
@@ -61,6 +62,8 @@ export CLAWTV_SERVER_ORIGIN=http://localhost:8787/ClawTV/
 export CLAWTV_DATA_DIR=./data
 export PLEX_BASE_URL=http://127.0.0.1:32400/
 export PLEX_TOKEN=your-plex-token
+export CLAWTV_PLEX_SYNC_INTERVAL_MINUTES=15
+export CLAWTV_PLEX_REFRESH_TIMEOUT_SECONDS=60
 export CLAWTV_VOICE_ENABLED=true
 export CLAWTV_VOICE_BACKEND=openclaw
 export CLAWTV_VOICE_ASSISTANT_NAME=Assistant
@@ -92,6 +95,7 @@ pnpm --filter @clawtv/cli dev now-playing
 pnpm --filter @clawtv/cli dev now-playing-summary
 pnpm --filter @clawtv/cli dev voice-config
 pnpm --filter @clawtv/cli dev voice-turn --text "how long is left in this?"
+pnpm --filter @clawtv/cli dev check-new-content
 pnpm --filter @clawtv/cli dev search --query "john oliver" --type episode
 pnpm --filter @clawtv/cli dev list-shows --limit 20
 pnpm --filter @clawtv/cli dev recently-added --type movie --limit 10

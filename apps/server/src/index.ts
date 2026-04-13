@@ -9,8 +9,11 @@ import { promisify } from "node:util";
 import type {
   CatalogRecommendationResponse,
   CatalogMediaTypeFilter,
+  CheckNewContentRequest,
+  CheckNewContentResponse,
   ClientPlaybackState,
   CommandName,
+  MediaItemSummary,
   PlaybackDiagnostics,
   PlaybackDiagnosticsUpdateRequest,
   PlaybackSnapshot,
@@ -23,7 +26,7 @@ import type {
 } from "@clawtv/contracts";
 import { DEFAULT_BASE_PATH, normalizeBasePath, withBasePath } from "@clawtv/core";
 import { openClawTvDatabase } from "@clawtv/db";
-import { syncPlexCatalog } from "@clawtv/plex-sync";
+import { syncPlexCatalog, triggerPlexLibraryScan, waitForPlexLibraryScan } from "@clawtv/plex-sync";
 
 const rootDir = fileURLToPath(new URL("../../..", import.meta.url));
 const serverDataDir = process.env.CLAWTV_DATA_DIR ?? join(rootDir, "data");
@@ -44,6 +47,10 @@ let activeHlsSession: {
   plexRatingKey: string;
   mediaPlaylistUrl: string;
 } | null = null;
+let syncInFlight: Promise<{
+  syncRun: CheckNewContentResponse["syncRun"];
+  items: MediaItemSummary[];
+}> | null = null;
 
 mkdirSync(voiceCacheDir, { recursive: true });
 
@@ -409,51 +416,51 @@ const server = createServer(async (request, response) => {
     const body = await readJsonBody(request);
     const mode = parseSyncMode(body.mode);
     const library = typeof body.library === "string" ? body.library : undefined;
-    if (!plexToken) {
-      const syncRun = db.recordFailedSyncRun({
-        mode,
-        status: "failed",
-        librariesSynced: 0,
-        mediaItemsSynced: 0,
-        errorMessage: "PLEX_TOKEN is not configured on the server."
-      });
-
-      sendJson(response, 500, {
-        ok: false,
-        error: "PLEX_TOKEN is not configured on the server.",
-        syncRun
-      });
-      return;
-    }
-
     try {
-      const payload = await syncPlexCatalog({
-        baseUrl: plexBaseUrl,
-        token: plexToken,
+      const { syncRun } = await runCatalogSync({
+        plexBaseUrl,
+        plexToken,
         mode,
         library
       });
-      const syncRun = db.applyCatalogSync(payload, {
-        mode,
-        status: "success",
-        librariesSynced: payload.libraries.length,
-        mediaItemsSynced: payload.mediaItems.length
-      });
-
       sendJson(response, 202, {
         ok: true,
         syncRun
       });
       return;
     } catch (error) {
+      const syncRun = db.getLatestSyncRun();
       const message = error instanceof Error ? error.message : "Plex sync failed.";
-      const syncRun = db.recordFailedSyncRun({
-        mode,
-        status: "failed",
-        librariesSynced: 0,
-        mediaItemsSynced: 0,
-        errorMessage: message
+
+      sendJson(response, 500, {
+        ok: false,
+        error: message,
+        syncRun
       });
+      return;
+    }
+  }
+
+  if (request.method === "POST" && routePath === "/api/sync/check-new-content") {
+    const body = (await readJsonBody(request)) as unknown as CheckNewContentRequest;
+    const library = typeof body.library === "string" ? body.library : undefined;
+    const limit = typeof body.limit === "number" && Number.isFinite(body.limit)
+      ? Math.max(1, Math.min(25, Math.round(body.limit)))
+      : 10;
+
+    try {
+      const result = await checkForNewContent({
+        plexBaseUrl,
+        plexToken,
+        library,
+        limit
+      });
+
+      sendJson(response, 202, result);
+      return;
+    } catch (error) {
+      const syncRun = db.getLatestSyncRun();
+      const message = error instanceof Error ? error.message : "Failed to check for new content.";
 
       sendJson(response, 500, {
         ok: false,
@@ -501,6 +508,8 @@ server.listen(port, () => {
   console.log(`API status endpoint: http://localhost:${port}${withBasePath(basePath, "/api/status")}`);
 });
 
+startAutomaticIncrementalSyncLoop();
+
 async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
 
@@ -517,6 +526,241 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
   } catch {
     return {};
   }
+}
+
+async function runCatalogSync(input: {
+  plexBaseUrl: string;
+  plexToken?: string;
+  mode: SyncMode;
+  library?: string;
+}): Promise<{
+  syncRun: CheckNewContentResponse["syncRun"];
+  items: MediaItemSummary[];
+}> {
+  if (syncInFlight) {
+    return syncInFlight;
+  }
+
+  syncInFlight = (async () => {
+    const startedAt = new Date().toISOString();
+
+    if (!input.plexToken) {
+      const syncRun = db.recordFailedSyncRun({
+        mode: input.mode,
+        status: "failed",
+        startedAt,
+        librariesSynced: 0,
+        mediaItemsSynced: 0,
+        errorMessage: "PLEX_TOKEN is not configured on the server."
+      });
+
+      throw Object.assign(new Error("PLEX_TOKEN is not configured on the server."), { syncRun });
+    }
+
+    try {
+      const lastSuccessfulSync = db.getLatestSuccessfulSyncRun();
+      const payload = await syncPlexCatalog({
+        baseUrl: input.plexBaseUrl,
+        token: input.plexToken,
+        mode: input.mode,
+        library: input.library,
+        lastSuccessfulSyncAt: lastSuccessfulSync?.finishedAt ?? null
+      });
+      const finishedAt = new Date().toISOString();
+      const syncRun = db.applyCatalogSync(payload, {
+        mode: input.mode,
+        status: "success",
+        startedAt,
+        finishedAt,
+        librariesSynced: payload.libraries.length,
+        mediaItemsSynced: payload.mediaItems.length
+      });
+
+      return {
+        syncRun,
+        items: summarizeSyncedMediaItems(payload.mediaItems)
+      };
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const message = error instanceof Error ? error.message : "Plex sync failed.";
+      const syncRun = db.recordFailedSyncRun({
+        mode: input.mode,
+        status: "failed",
+        startedAt,
+        finishedAt,
+        librariesSynced: 0,
+        mediaItemsSynced: 0,
+        errorMessage: message
+      });
+
+      throw Object.assign(error instanceof Error ? error : new Error(message), { syncRun });
+    } finally {
+      syncInFlight = null;
+    }
+  })();
+
+  return syncInFlight;
+}
+
+async function checkForNewContent(input: {
+  plexBaseUrl: string;
+  plexToken?: string;
+  library?: string;
+  limit: number;
+}): Promise<CheckNewContentResponse> {
+  if (!input.plexToken) {
+    const startedAt = new Date().toISOString();
+    const syncRun = db.recordFailedSyncRun({
+      mode: "incremental-sync",
+      status: "failed",
+      startedAt,
+      librariesSynced: 0,
+      mediaItemsSynced: 0,
+      errorMessage: "PLEX_TOKEN is not configured on the server."
+    });
+
+    throw Object.assign(new Error("PLEX_TOKEN is not configured on the server."), { syncRun });
+  }
+
+  await triggerPlexLibraryScan({
+    baseUrl: input.plexBaseUrl,
+    token: input.plexToken,
+    mode: "incremental-sync",
+    library: input.library
+  });
+  await waitForPlexLibraryScan({
+    baseUrl: input.plexBaseUrl,
+    token: input.plexToken,
+    mode: "incremental-sync",
+    library: input.library
+  }, {
+    timeoutMs: resolveContentRefreshWaitTimeoutMs()
+  });
+
+  const { syncRun, items } = await runCatalogSync({
+    plexBaseUrl: input.plexBaseUrl,
+    plexToken: input.plexToken,
+    mode: "incremental-sync",
+    library: input.library
+  });
+
+  return {
+    ok: true,
+    scanTriggered: true,
+    library: input.library ?? null,
+    syncRun,
+    items: items.slice(0, input.limit)
+  };
+}
+
+function summarizeSyncedMediaItems(items: Array<{
+  id: string;
+  title: string;
+  mediaType: "show" | "season" | "episode" | "movie";
+  showId: string | null;
+  year: number | null;
+  addedAt: string | null;
+  originallyAvailableAt: string | null;
+  seasonNumber: number | null;
+  episodeNumber: number | null;
+  viewCount: number | null;
+  lastViewedAt: string | null;
+  viewOffsetMs: number | null;
+  userRating: number | null;
+  audienceRating: number | null;
+  criticRating: number | null;
+}>): MediaItemSummary[] {
+  const showTitlesById = new Map(
+    items
+      .filter((item) => item.mediaType === "show")
+      .map((item) => [item.id, item.title] as const)
+  );
+
+  return items
+    .filter((item) => item.mediaType === "movie" || item.mediaType === "episode")
+    .sort((left, right) => {
+      const leftDate = Date.parse(left.addedAt ?? left.originallyAvailableAt ?? "") || 0;
+      const rightDate = Date.parse(right.addedAt ?? right.originallyAvailableAt ?? "") || 0;
+
+      if (leftDate !== rightDate) {
+        return rightDate - leftDate;
+      }
+
+      return left.title.localeCompare(right.title);
+    })
+    .map((item) => ({
+      id: item.id,
+      title: item.title,
+      mediaType: item.mediaType,
+      showTitle: item.showId ? showTitlesById.get(item.showId) ?? null : null,
+      year: item.year,
+      originallyAvailableAt: item.originallyAvailableAt,
+      seasonNumber: item.seasonNumber,
+      episodeNumber: item.episodeNumber,
+      viewCount: item.viewCount,
+      lastViewedAt: item.lastViewedAt,
+      viewOffsetMs: item.viewOffsetMs,
+      userRating: item.userRating,
+      audienceRating: item.audienceRating,
+      criticRating: item.criticRating
+    }));
+}
+
+function resolveAutomaticSyncIntervalMs(): number {
+  const raw = process.env.CLAWTV_PLEX_SYNC_INTERVAL_MINUTES?.trim();
+
+  if (!raw) {
+    return 15 * 60 * 1000;
+  }
+
+  const parsed = Number(raw);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+
+  return Math.round(parsed * 60 * 1000);
+}
+
+function resolveContentRefreshWaitTimeoutMs(): number {
+  const raw = process.env.CLAWTV_PLEX_REFRESH_TIMEOUT_SECONDS?.trim();
+  const parsed = raw ? Number(raw) : 60;
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 60_000;
+  }
+
+  return Math.round(parsed * 1000);
+}
+
+function startAutomaticIncrementalSyncLoop(): void {
+  const intervalMs = resolveAutomaticSyncIntervalMs();
+  const plexToken = process.env.PLEX_TOKEN;
+  const plexBaseUrl = process.env.PLEX_BASE_URL ?? "http://127.0.0.1:32400";
+
+  if (!plexToken || intervalMs <= 0) {
+    return;
+  }
+
+  const run = async (): Promise<void> => {
+    try {
+      await runCatalogSync({
+        plexBaseUrl,
+        plexToken,
+        mode: "incremental-sync"
+      });
+    } catch (error) {
+      console.warn("Automatic ClawTV incremental sync failed:", error instanceof Error ? error.message : error);
+    }
+  };
+
+  if (!db.getLatestSuccessfulSyncRun()) {
+    void run();
+  }
+
+  setInterval(() => {
+    void run();
+  }, intervalMs).unref();
 }
 
 function parseSyncMode(value: unknown): SyncMode {

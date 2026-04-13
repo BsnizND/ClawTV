@@ -6,6 +6,8 @@ import type {
   CatalogRecentResponse,
   CatalogSearchResponse,
   CatalogShowListResponse,
+  CheckNewContentRequest,
+  CheckNewContentResponse,
   CommandName,
   CommandResult,
   PlaybackContext,
@@ -82,6 +84,17 @@ async function main(): Promise<void> {
     if (rawCommand === "sync-status") {
       const syncStatus = await getJson<{ latestRun: SyncRunSummary | null }>("api/sync/status");
       console.log(JSON.stringify(syncStatus, null, 2));
+      return;
+    }
+
+    if (rawCommand === "check-new-content") {
+      const payload = parseKeyValueFlags(restArgs);
+      const parsedLimit = payload.limit ? Number(payload.limit) : undefined;
+      const result = await postJson<CheckNewContentResponse>("api/sync/check-new-content", {
+        library: payload.library,
+        limit: typeof parsedLimit === "number" && Number.isFinite(parsedLimit) ? parsedLimit : undefined
+      } satisfies CheckNewContentRequest);
+      console.log(JSON.stringify(result, null, 2));
       return;
     }
 
@@ -190,6 +203,7 @@ Usage:
   clawtv recommend-show --show "Seinfeld" [--strategy default|random|highly-rated] [--limit 3]
   clawtv sync-status
   clawtv sync-plex --mode full-sync [--library "TV Shows"]
+  clawtv check-new-content [--library "TV Shows"] [--limit 10]
   clawtv play --title "The Matrix"
   clawtv play-latest --series "The Late Show with Stephen Colbert"
   clawtv shuffle --show "Bluey"

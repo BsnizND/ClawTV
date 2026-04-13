@@ -1,6 +1,6 @@
 ---
 name: clawtv-control
-description: Control ClawTV playback through the repo CLI. Use when an OpenClaw agent needs to check what is on TV, browse the catalog, search titles or series, list shows or collections, inspect recent additions, play something by title, play the latest episode of a series, shuffle a show or collection, send transport controls like pause, resume, seek, next, refresh, or stop, or exercise the ClawTV voice API.
+description: Control ClawTV playback through the repo CLI. Use when an OpenClaw agent needs to check what is on TV, browse the catalog, search titles or series, list shows or collections, inspect recent additions, trigger a new-content sync, play something by title, play the latest episode of a series, shuffle a show or collection, send transport controls like pause, resume, seek, next, refresh, or stop, or exercise the ClawTV voice API.
 ---
 
 # ClawTV Control
@@ -20,6 +20,7 @@ Use this skill for requests like:
 - What collections exist?
 - Search for something in the library.
 - What was added recently?
+- Look for new content that just landed in Plex.
 - Play a movie or episode by title.
 - Play the latest episode of a show.
 - Shuffle a show or collection.
@@ -79,6 +80,13 @@ Inspect recent additions:
 ```bash
 python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py recently-added --limit 10
 python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py recently-added --type movie --limit 10
+```
+
+Trigger a Plex scan and pull in new content:
+
+```bash
+python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py check-new-content
+python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py check-new-content --library "TV Shows" --limit 10
 ```
 
 Inspect voice config:
@@ -160,6 +168,7 @@ python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py --repo-root /so
 - When `CLAWTV_VOICE_BACKEND=openclaw` is configured on the server, `voice-turn` exercises the live OpenClaw handoff path too.
 - Prefer `now-playing` or `status` first when the user is asking what is currently happening and raw JSON is useful.
 - Prefer `search`, `list-shows`, `list-collections`, or `recently-added` when the user is exploring what ClawTV already has.
+- Prefer `check-new-content` when the user just added something to Plex and wants ClawTV or the voice assistant to see it right away.
 - Prefer `play-latest` when the user asks for "last night's" or "latest" episode of a series.
 - Use `shuffle --show` or `shuffle --collection` only when the user clearly asked for a shuffle-style experience.
 - Keep the response focused on the outcome, not the raw command syntax, unless the user asked for it.
