@@ -1,8 +1,8 @@
 # ClawTV
 
-ClawTV is a self-hosted, agent-friendly TV playback system for Android TV devices such as NVIDIA Shield.
+ClawTV is a self-hosted, agent-first TV playback system for Android TV devices such as NVIDIA Shield.
 
-It is built for a very specific kind of experience: you should be able to turn on the TV, land in a simple fullscreen receiver, and ask a person, script, or agent to put something on without digging through app menus. That makes it interesting not just as a home theater tool, but as an accessibility project for low-vision and low-friction viewing.
+It is built for a very specific kind of experience: you should be able to turn on the TV, land in a simple fullscreen receiver, and use an agentic control layer to put something on without digging through app menus. That makes it interesting not just as a home theater tool, but as an accessibility project for low-vision and low-friction viewing.
 
 ## Why This Is Interesting
 
@@ -10,7 +10,7 @@ Most TV software assumes the viewer will browse visually, manage apps, and make 
 
 - the TV screen stays simple
 - playback state lives on the server
-- control happens through a CLI or agent layer
+- control happens through an agent-first command layer
 - the receiver behaves more like a channel endpoint than a content browser
 
 That makes the project useful for:
@@ -40,7 +40,7 @@ Today it supports:
 
 ## Architecture In One Sentence
 
-ClawTV is an agentic control layer for watching movies and TV on Android TV: the server decides what is on, and the receiver just plays it.
+ClawTV is an agentic control layer for watching movies and TV on Android TV: the agent decides what goes on screen, the server owns playback state, and the receiver just plays it.
 
 ## Quick Start
 
