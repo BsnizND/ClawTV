@@ -66,8 +66,8 @@ export CLAWTV_PLEX_SYNC_INTERVAL_MINUTES=15
 export CLAWTV_PLEX_REFRESH_TIMEOUT_SECONDS=60
 export CLAWTV_VOICE_ENABLED=true
 export CLAWTV_VOICE_BACKEND=openclaw
-export CLAWTV_VOICE_ASSISTANT_NAME=Assistant
-export CLAWTV_VOICE_ASSISTANT_ID=main
+export CLAWTV_VOICE_ASSISTANT_NAME=Kay
+export CLAWTV_VOICE_ASSISTANT_ID=kay
 export CLAWTV_VOICE_GREETING_TEXT="Hey, what can I do for you?"
 export CLAWTV_VOICE_PROCESSING_TEXT="Looking into it."
 export CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT="Got you."
@@ -77,7 +77,7 @@ export CLAWTV_VOICE_PROCESSING_VARIANTS="Looking into it.|Give me a second.|Work
 export CLAWTV_VOICE_ACKNOWLEDGEMENT_VARIANTS="Okay.|Got it.|On it."
 export CLAWTV_VOICE_UNAVAILABLE_VARIANTS="Voice chat is not available right now.|I can't help with that right now.|Try again in a moment."
 export CLAWTV_VOICE_AUDIO_PACK=default
-export CLAWTV_OPENCLAW_AGENT_ID=your-assistant-id
+export CLAWTV_OPENCLAW_AGENT_ID=kay
 export CLAWTV_OPENCLAW_THINKING=minimal
 export CLAWTV_OPENCLAW_TIMEOUT_SECONDS=90
 export ELEVENLABS_API_KEY=your-elevenlabs-api-key
@@ -135,12 +135,13 @@ The Android TV app under `apps/android-tv` is intentionally thin:
 
 ## Voice
 
-The repo now has a generic, configurable voice path instead of a hard-coded assistant identity.
+ClawTV voice is Kay by default. Jay is Brian's personal assistant, not the TV remote persona.
 
 - Android TV captures first-pass STT with `SpeechRecognizer`
 - the receiver loads assistant config from `GET /api/voice/config`
 - voice turns post to `POST /api/voice/turn`
-- the server can answer playback questions directly, hand general conversation turns to OpenClaw, and keep recommendation turns conversational instead of auto-playing when a follow-up makes more sense
+- the server only short-circuits local transport controls such as pause, resume, and stop/off; other turns go through the assistant path instead of keyword routing
+- when `CLAWTV_VOICE_BACKEND=openclaw`, live turns hand off to the configured OpenClaw assistant and fail clearly if that handoff is unavailable
 - when ElevenLabs credentials are configured, both cue audio and reply audio can be cached and streamed back to the TV instead of relying on client TTS
 - when live replies are using client TTS, cue audio URLs stay empty so the same device voice is used for snippets too
 - cue snippets inherit the live reply voice by default; only set `ELEVENLABS_CUE_*` overrides when you intentionally want a different cue voice

@@ -1,13 +1,15 @@
 # ClawTV Voice Roadmap
 
-ClawTV now has the first real shape of a generic voice path:
+ClawTV voice is centered on Kay, the TV assistant persona for the remote and on-screen receiver. Jay is Brian's personal assistant and is not the default voice identity for this project.
+
+ClawTV now has the first real shape of a voice path:
 
 - the Android TV receiver captures first-pass speech-to-text on the Shield
 - the receiver fetches assistant config from the ClawTV server
 - the receiver sends transcripts to `POST /api/voice/turn`
-- the server can answer basic playback questions and execute simple playback intents
+- the server can keep a small local transport-control layer while handing everything else to the assistant path
 
-That gets the repo off the hard-coded assistant stub and gives us a stable contract for the full live version.
+That gets the repo off the hard-coded assistant stub and gives us a stable contract for the live version.
 
 ## Current State
 
@@ -19,15 +21,10 @@ What is implemented now:
 - server-side `POST /api/voice/turn`
 - OpenClaw CLI handoff support for conversational turns
 - server-served cue packs loaded from `assets/voice/<pack>/...`
-- mock voice intent handling for:
-  - what is playing
-  - time left
-  - more episodes in this season
-  - more seasons after this one
+- local transport controls for:
   - pause
   - resume
-  - next
-  - stop
+  - stop / turn it off
 - CLI support for `voice-config` and `voice-turn`
 - OpenClaw skill docs for the same voice API
 
@@ -41,10 +38,11 @@ What is not implemented yet:
 Goal: make the generic voice path stable and safe to iterate on.
 
 - keep the Android TV app thin
-- keep assistant identity configurable
+- keep Kay as the default ClawTV identity while still allowing explicit per-deployment overrides
 - keep voice transport on the ClawTV server
 - keep local STT on the Shield for low-latency first pass
 - preserve playback state cleanly while voice mode is active
+- fail loudly when the live assistant path is misconfigured instead of falling back to mock behavior
 
 Exit criteria:
 
@@ -66,6 +64,7 @@ Exit criteria:
 - the server can route a transcript to the configured OpenClaw assistant
 - the response can contain both user-facing text and structured playback actions
 - the Android app does not need OpenClaw credentials or direct routing logic
+- freeform questions are not hijacked by deterministic keyword routing
 
 ## Phase 3
 
