@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,7 @@ const voiceCacheDir = join(serverDataDir, "voice-cache");
 const port = Number(process.env.PORT ?? 8787);
 const basePath = normalizeBasePath(process.env.CLAWTV_BASE_PATH ?? DEFAULT_BASE_PATH) || DEFAULT_BASE_PATH;
 const webDistDir = join(rootDir, "apps", "web", "dist");
+const serverBuildFingerprint = resolveServerBuildFingerprint();
 const execFileAsync = promisify(execFile);
 const db = openClawTvDatabase({
   rootDir,
@@ -942,6 +943,7 @@ function buildPlaybackSnapshot() {
 async function buildVoiceConfig(): Promise<VoiceConfig> {
   const backend = resolveVoiceBackend();
   const replyMode = resolveVoiceReplyMode();
+  const serveCueAudio = replyMode === "server-audio";
   const greetingText = pickCueLine("greeting", process.env.CLAWTV_VOICE_GREETING_TEXT?.trim() || "Hey, what can I do for you?");
   const processingText = pickCueLine("processing", process.env.CLAWTV_VOICE_PROCESSING_TEXT?.trim() || "Looking into it.");
   const acknowledgementText = pickCueLine("acknowledgement", process.env.CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT?.trim() || "Got it.");
@@ -956,10 +958,10 @@ async function buildVoiceConfig(): Promise<VoiceConfig> {
     processingText,
     acknowledgementText,
     unavailableText,
-    greetingAudioUrl: await resolveVoiceCueUrl("greeting", greetingText),
-    processingAudioUrl: await resolveVoiceCueUrl("processing", processingText),
-    acknowledgementAudioUrl: await resolveVoiceCueUrl("acknowledgement", acknowledgementText),
-    unavailableAudioUrl: await resolveVoiceCueUrl("unavailable", unavailableText),
+    greetingAudioUrl: serveCueAudio ? await resolveVoiceCueUrl("greeting", greetingText) : null,
+    processingAudioUrl: serveCueAudio ? await resolveVoiceCueUrl("processing", processingText) : null,
+    acknowledgementAudioUrl: serveCueAudio ? await resolveVoiceCueUrl("acknowledgement", acknowledgementText) : null,
+    unavailableAudioUrl: serveCueAudio ? await resolveVoiceCueUrl("unavailable", unavailableText) : null,
     sttMode: "shield",
     replyMode
   };
@@ -1602,7 +1604,7 @@ function resolveVoiceReplyMode(): VoiceConfig["replyMode"] {
 async function synthesizeVoiceReplyAudio(text: string): Promise<string | null> {
   return synthesizeVoiceAudio(text, {
     bucket: "replies",
-    modelId: process.env.ELEVENLABS_MODEL_ID?.trim() || "eleven_flash_v2_5"
+    defaultModelId: "eleven_flash_v2_5"
   });
 }
 
@@ -1612,9 +1614,7 @@ async function resolveVoiceCueUrl(
 ): Promise<string | null> {
   const synthesized = await synthesizeVoiceAudio(text, {
     bucket: `cues/${category}`,
-    modelId: process.env.ELEVENLABS_CUE_MODEL_ID?.trim()
-      || process.env.ELEVENLABS_MODEL_ID?.trim()
-      || "eleven_flash_v2_5"
+    defaultModelId: "eleven_flash_v2_5"
   });
 
   return synthesized ?? pickVoiceCueUrl(category);
@@ -1622,18 +1622,20 @@ async function resolveVoiceCueUrl(
 
 async function synthesizeVoiceAudio(inputText: string, options: {
   bucket: string;
-  modelId: string;
+  defaultModelId: string;
 }): Promise<string | null> {
   const text = inputText.trim();
+  const isCue = options.bucket.startsWith("cues/");
 
   if (!text.trim() || !isElevenLabsConfigured()) {
     return null;
   }
 
   const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
-  const voiceId = process.env.ELEVENLABS_VOICE_ID?.trim();
-  const modelId = options.modelId;
-  const voiceSettings = resolveElevenLabsVoiceSettings(options.bucket.startsWith("cues/"));
+  const voiceId = resolveElevenLabsVoiceId(isCue);
+  const modelId = resolveElevenLabsModelId(isCue, options.defaultModelId);
+  const voiceSettings = resolveElevenLabsVoiceSettings(isCue);
+  const cacheVersion = resolveElevenLabsCacheVersion(isCue);
 
   if (!apiKey || !voiceId) {
     return null;
@@ -1643,7 +1645,7 @@ async function synthesizeVoiceAudio(inputText: string, options: {
   mkdirSync(cacheDir, { recursive: true });
 
   const cacheKey = createHash("sha256")
-    .update(JSON.stringify({ voiceId, modelId, bucket: options.bucket, text, voiceSettings }))
+    .update(JSON.stringify({ voiceId, modelId, bucket: options.bucket, text, voiceSettings, cacheVersion }))
     .digest("hex");
   const fileName = `${cacheKey}.mp3`;
   const filePath = join(cacheDir, fileName);
@@ -1713,6 +1715,50 @@ function resolveElevenLabsVoiceSettings(isCue: boolean): Record<string, unknown>
     return isPlainObject(parsed) ? parsed : null;
   } catch (error) {
     console.warn(`Unable to parse ElevenLabs voice settings JSON (${isCue ? "cue" : "reply"}):`, error);
+    return null;
+  }
+}
+
+function resolveElevenLabsVoiceId(isCue: boolean): string | null {
+  const replyVoiceId = process.env.ELEVENLABS_VOICE_ID?.trim();
+
+  if (!isCue) {
+    return replyVoiceId || null;
+  }
+
+  return process.env.ELEVENLABS_CUE_VOICE_ID?.trim() || replyVoiceId || null;
+}
+
+function resolveElevenLabsModelId(isCue: boolean, fallbackModelId: string): string {
+  const replyModelId = process.env.ELEVENLABS_MODEL_ID?.trim();
+
+  if (!isCue) {
+    return replyModelId || fallbackModelId;
+  }
+
+  return process.env.ELEVENLABS_CUE_MODEL_ID?.trim() || replyModelId || fallbackModelId;
+}
+
+function resolveElevenLabsCacheVersion(isCue: boolean): string | null {
+  const automaticBuildSalt = serverBuildFingerprint;
+
+  if (!isCue) {
+    return process.env.ELEVENLABS_CACHE_VERSION?.trim()
+      || automaticBuildSalt
+      || null;
+  }
+
+  return process.env.ELEVENLABS_CUE_CACHE_VERSION?.trim()
+    || process.env.ELEVENLABS_CACHE_VERSION?.trim()
+    || automaticBuildSalt
+    || null;
+}
+
+function resolveServerBuildFingerprint(): string | null {
+  try {
+    const buildStats = statSync(fileURLToPath(import.meta.url));
+    return `${buildStats.mtimeMs}-${buildStats.size}`;
+  } catch {
     return null;
   }
 }

@@ -280,7 +280,7 @@ class MainActivity : AppCompatActivity() {
 
         val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
         if (granted) {
-            beginVoiceGreeting()
+            beginVoiceListening()
             return
         }
 
@@ -543,7 +543,7 @@ class MainActivity : AppCompatActivity() {
         return false
     }
 
-    private fun beginVoiceGreeting() {
+    private fun beginVoiceListening() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             showVoiceOverlay(
                 title = getString(R.string.voice_title_error),
@@ -559,16 +559,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val playedGreeting = playVoiceCue(
-            audioUrl = voiceProfile.greetingAudioUrl,
-            clipResId = R.raw.voice_greeting,
-            fallbackText = voiceProfile.greetingText,
-            onComplete = { startSpeechListening() }
-        )
-
-        if (!playedGreeting) {
-            mainHandler.postDelayed({ startSpeechListening() }, 400L)
-        }
+        startSpeechListening()
     }
 
     private fun startSpeechListening() {
@@ -985,7 +976,7 @@ class MainActivity : AppCompatActivity() {
 
                     voiceTurn.replyText == voiceTurn.voiceProfile.acknowledgementText -> playVoiceCue(
                         audioUrl = voiceTurn.voiceProfile.acknowledgementAudioUrl,
-                        clipResId = R.raw.voice_ack,
+                        clipResId = null,
                         fallbackText = voiceTurn.replyText,
                         onComplete = onComplete
                     )
@@ -1440,7 +1431,7 @@ class MainActivity : AppCompatActivity() {
 
             runOnUiThread {
                 fetchedProfile?.let(::applyVoiceProfile)
-                beginVoiceGreeting()
+                beginVoiceListening()
             }
         }
     }

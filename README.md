@@ -83,9 +83,12 @@ export CLAWTV_OPENCLAW_TIMEOUT_SECONDS=90
 export ELEVENLABS_API_KEY=your-elevenlabs-api-key
 export ELEVENLABS_VOICE_ID=your-elevenlabs-voice-id
 export ELEVENLABS_MODEL_ID=eleven_flash_v2_5
+export ELEVENLABS_CUE_VOICE_ID=
 export ELEVENLABS_CUE_MODEL_ID=eleven_flash_v2_5
 export ELEVENLABS_VOICE_SETTINGS_JSON='{"stability":0.42,"similarity_boost":0.78,"style":0.28,"use_speaker_boost":true}'
 export ELEVENLABS_CUE_VOICE_SETTINGS_JSON='{"stability":0.46,"similarity_boost":0.8,"style":0.24,"use_speaker_boost":true}'
+export ELEVENLABS_CACHE_VERSION=
+export ELEVENLABS_CUE_CACHE_VERSION=
 ```
 
 ## CLI Examples
@@ -139,6 +142,9 @@ The repo now has a generic, configurable voice path instead of a hard-coded assi
 - voice turns post to `POST /api/voice/turn`
 - the server can answer playback questions directly, hand general conversation turns to OpenClaw, and keep recommendation turns conversational instead of auto-playing when a follow-up makes more sense
 - when ElevenLabs credentials are configured, both cue audio and reply audio can be cached and streamed back to the TV instead of relying on client TTS
+- when live replies are using client TTS, cue audio URLs stay empty so the same device voice is used for snippets too
+- cue snippets inherit the live reply voice by default; only set `ELEVENLABS_CUE_*` overrides when you intentionally want a different cue voice
+- cue cache keys now auto-refresh from the running server build, so a rebuilt deployment regenerates snippets without a manual bump; `ELEVENLABS_CACHE_VERSION` and `ELEVENLABS_CUE_CACHE_VERSION` are optional overrides only
 
 The rollout plan for the full live assistant loop is in [docs/voice-roadmap.md](docs/voice-roadmap.md).
 
