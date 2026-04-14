@@ -1,7 +1,9 @@
 :root {
-  font-family: "Avenir Next", "Futura", "Trebuchet MS", sans-serif;
-  color: #f7f0dd;
-  background: #050505;
+  font-family: "Atkinson Hyperlegible", "Avenir Next", sans-serif;
+  background: #000;
+  color: #fff;
+  color-scheme: dark;
+  -webkit-text-size-adjust: 100%;
 }
 
 * {
@@ -12,13 +14,157 @@ html,
 body,
 #root {
   margin: 0;
-  min-width: 320px;
   min-height: 100vh;
-  background: #050505;
+  min-width: 320px;
+  background: #000;
 }
 
 body {
-  overflow: hidden;
+  background: #000;
+}
+
+button {
+  font: inherit;
+}
+
+.lv-shell {
+  min-height: 100vh;
+  background: #000;
+  color: #fff;
+  padding: 20px;
+}
+
+.lv-stage {
+  width: min(100%, 980px);
+  margin: 0 auto;
+  display: grid;
+  gap: 24px;
+}
+
+.lv-stage-choice {
+  width: 100%;
+  max-width: none;
+  min-height: calc(100vh - 40px);
+}
+
+.lv-heading {
+  margin: 0;
+  text-align: center;
+  font-size: clamp(3rem, 7vw, 5.5rem);
+  line-height: 0.95;
+  font-weight: 900;
+}
+
+.lv-message {
+  margin: 0;
+  text-align: center;
+  font-size: clamp(1.6rem, 3.4vw, 2.2rem);
+  line-height: 1.2;
+}
+
+.lv-message-error {
+  color: #ffd400;
+}
+
+.lv-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.lv-grid-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lv-split-grid {
+  min-height: calc(100vh - 40px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.lv-grid-letters {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.lv-action-button,
+.lv-title-button,
+.lv-back-button {
+  min-height: 120px;
+  border-radius: 24px;
+  border: 4px solid #fff;
+  background: #000;
+  color: #fff;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.lv-action-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.lv-action-button {
+  padding: 20px;
+  font-size: clamp(2.4rem, 5vw, 4rem);
+  line-height: 1;
+}
+
+.lv-action-button-split {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 32px;
+  font-size: clamp(3.2rem, 7vw, 6rem);
+}
+
+.lv-title-button {
+  width: 100%;
+  padding: 22px 24px;
+  text-align: left;
+  font-size: clamp(2.1rem, 4vw, 3.1rem);
+  line-height: 1.05;
+}
+
+.lv-back-button {
+  min-height: 88px;
+  padding: 12px 24px;
+  justify-self: start;
+  font-size: clamp(1.8rem, 3.2vw, 2.4rem);
+}
+
+.lv-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lv-icon {
+  width: min(22vw, 180px);
+  height: min(22vw, 180px);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.lv-list-screen {
+  display: grid;
+  gap: 20px;
+}
+
+.lv-list {
+  display: grid;
+  gap: 16px;
+}
+
+.lv-pagination {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
 }
 
 .player-shell {
@@ -42,77 +188,61 @@ body {
   display: grid;
   place-items: center;
   padding: 32px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.68));
+  background: rgba(0, 0, 0, 0.72);
 }
 
 .player-status-card {
-  max-width: 32rem;
+  max-width: 34rem;
   padding: 28px 32px;
   border-radius: 28px;
   text-align: center;
-  background: rgba(10, 10, 10, 0.72);
-  border: 1px solid rgba(247, 240, 221, 0.14);
-  backdrop-filter: blur(18px);
+  background: #000;
+  border: 4px solid #fff;
 }
 
 .player-status-kicker,
 .splash-kicker {
   display: inline-block;
+  font-size: 1rem;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  letter-spacing: 0.2em;
-  font-size: 0.76rem;
-  color: rgba(247, 240, 221, 0.68);
+  color: #fff;
 }
 
 .player-status-card h1,
 .splash-card h1 {
-  margin: 12px 0 14px;
-  font-size: clamp(2.6rem, 7vw, 5.8rem);
+  margin: 12px 0;
+  font-size: clamp(2.8rem, 7vw, 5.6rem);
   line-height: 0.95;
 }
 
 .player-status-card p,
 .splash-card p {
   margin: 0;
-  color: rgba(247, 240, 221, 0.84);
-  font-size: 1.02rem;
-  line-height: 1.6;
+  font-size: 1.3rem;
+  line-height: 1.35;
+  color: #fff;
 }
 
 .splash-screen {
-  position: relative;
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 32px;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at top, rgba(255, 143, 77, 0.28), transparent 36%),
-    linear-gradient(135deg, #1b120d 0%, #4d2b1f 45%, #090807 100%);
+  padding: 24px;
+  background: #000;
 }
 
 .splash-orb {
-  position: absolute;
-  width: min(52vw, 720px);
-  aspect-ratio: 1;
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at 32% 28%, rgba(255, 214, 150, 0.92), rgba(255, 163, 92, 0.85) 30%, rgba(157, 60, 21, 0.72) 58%, rgba(15, 6, 4, 0) 74%);
-  filter: blur(8px);
-  opacity: 0.88;
-  transform: translateY(-12%);
+  display: none;
 }
 
 .splash-card {
-  position: relative;
-  z-index: 1;
   width: min(100%, 46rem);
-  padding: 40px;
-  border-radius: 32px;
+  padding: 36px 30px;
+  border-radius: 28px;
   text-align: center;
-  background: rgba(8, 7, 7, 0.38);
-  border: 1px solid rgba(247, 240, 221, 0.12);
-  backdrop-filter: blur(18px);
+  background: #000;
+  border: 4px solid #fff;
 }
 
 .splash-status {
@@ -120,37 +250,34 @@ body {
   align-items: center;
   gap: 12px;
   margin-top: 24px;
-  padding: 14px 20px;
+  padding: 14px 18px;
   border-radius: 999px;
-  background: rgba(10, 10, 10, 0.5);
-  border: 1px solid rgba(247, 240, 221, 0.1);
+  border: 3px solid #fff;
 }
 
 .status-dot {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
   border-radius: 999px;
-  background: #ff6a3d;
-  box-shadow: 0 0 18px rgba(255, 106, 61, 0.7);
+  background: #ffd400;
 }
 
 .splash-status[data-connected="true"] .status-dot {
-  background: #7fe38e;
-  box-shadow: 0 0 18px rgba(127, 227, 142, 0.7);
+  background: #00ff66;
 }
 
-@media (max-width: 960px) {
-  .player-status-card,
-  .splash-card {
-    padding: 28px 24px;
+@media (max-width: 900px) {
+  .lv-grid-two,
+  .lv-pagination {
+    grid-template-columns: 1fr;
   }
 
-  .player-status-overlay,
-  .splash-screen {
-    padding: 20px;
+  .lv-split-grid {
+    grid-template-columns: 1fr;
+    min-height: auto;
   }
 
-  .splash-orb {
-    width: min(88vw, 560px);
+  .lv-grid-letters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }

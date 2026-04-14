@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import type {
   CatalogRecommendationResponse,
   CatalogMediaTypeFilter,
+  CatalogMovieListResponse,
   CheckNewContentRequest,
   CheckNewContentResponse,
   ClientPlaybackState,
@@ -365,7 +366,25 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "GET" && routePath === "/api/catalog/shows") {
     const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
-    sendJson(response, 200, db.listShows(limit));
+    const offset = parseCatalogOffset(requestUrl.searchParams.get("offset"));
+    const startsWith = requestUrl.searchParams.get("startsWith");
+    sendJson(response, 200, db.listShows({
+      limit,
+      offset,
+      startsWith
+    }));
+    return;
+  }
+
+  if (request.method === "GET" && routePath === "/api/catalog/movies") {
+    const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
+    const offset = parseCatalogOffset(requestUrl.searchParams.get("offset"));
+    const startsWith = requestUrl.searchParams.get("startsWith");
+    sendJson(response, 200, db.listMovies({
+      limit,
+      offset,
+      startsWith
+    }) satisfies CatalogMovieListResponse);
     return;
   }
 
@@ -783,6 +802,20 @@ function parseCatalogLimit(value: string | null): number | undefined {
   const parsed = Number(value);
 
   if (!Number.isFinite(parsed)) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function parseCatalogOffset(value: string | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
     return undefined;
   }
 

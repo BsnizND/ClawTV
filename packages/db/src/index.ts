@@ -7,6 +7,8 @@ import type {
   CatalogCollectionListResponse,
   CatalogCollectionSummary,
   CatalogMediaTypeFilter,
+  CatalogMovieListResponse,
+  CatalogMovieSummary,
   CatalogRecommendationResponse,
   CatalogRecentResponse,
   CatalogSearchResponse,
@@ -205,6 +207,12 @@ interface CollectionSummaryRow {
   id: string;
   title: string;
   item_count: number;
+}
+
+interface MovieSummaryRow {
+  id: string;
+  title: string;
+  year: number | null;
 }
 
 interface ResolvedShowRow {
@@ -634,7 +642,12 @@ export class ClawTvDatabase {
     };
   }
 
-  listShows(limit?: number): CatalogShowListResponse {
+  listShows(input?: {
+    limit?: number;
+    offset?: number;
+    startsWith?: string | null;
+  }): CatalogShowListResponse {
+    const startsWith = normalizeStartsWithFilter(input?.startsWith);
     const rows = this.db.prepare(`
       SELECT
         show_mi.id,
@@ -645,15 +658,47 @@ export class ClawTvDatabase {
       JOIN media_items show_mi ON show_mi.id = s.media_item_id
       LEFT JOIN episodes e ON e.show_id = s.media_item_id
       LEFT JOIN media_items episode_mi ON episode_mi.id = e.media_item_id
+      WHERE (:startsWith IS NULL OR upper(substr(show_mi.title, 1, 1)) = :startsWith)
       GROUP BY show_mi.id, show_mi.title
       ORDER BY show_mi.title ASC
       LIMIT :limit
+      OFFSET :offset
     `).all({
-      limit: clampCatalogLimit(limit)
+      startsWith,
+      limit: clampCatalogLimit(input?.limit),
+      offset: clampCatalogOffset(input?.offset)
     }) as unknown as ShowSummaryRow[];
 
     return {
       shows: rows.map((row) => mapShowSummaryRow(row))
+    };
+  }
+
+  listMovies(input?: {
+    limit?: number;
+    offset?: number;
+    startsWith?: string | null;
+  }): CatalogMovieListResponse {
+    const startsWith = normalizeStartsWithFilter(input?.startsWith);
+    const rows = this.db.prepare(`
+      SELECT
+        mi.id,
+        mi.title,
+        mi.year
+      FROM movies m
+      JOIN media_items mi ON mi.id = m.media_item_id
+      WHERE (:startsWith IS NULL OR upper(substr(mi.title, 1, 1)) = :startsWith)
+      ORDER BY mi.title ASC, COALESCE(mi.year, 0) DESC
+      LIMIT :limit
+      OFFSET :offset
+    `).all({
+      startsWith,
+      limit: clampCatalogLimit(input?.limit),
+      offset: clampCatalogOffset(input?.offset)
+    }) as unknown as MovieSummaryRow[];
+
+    return {
+      movies: rows.map((row) => mapMovieSummaryRow(row))
     };
   }
 
@@ -2115,6 +2160,14 @@ function mapShowSummaryRow(row: ShowSummaryRow): CatalogShowSummary {
   };
 }
 
+function mapMovieSummaryRow(row: MovieSummaryRow): CatalogMovieSummary {
+  return {
+    id: row.id,
+    title: row.title,
+    year: row.year
+  };
+}
+
 function mapCollectionSummaryRow(row: CollectionSummaryRow): CatalogCollectionSummary {
   return {
     id: row.id,
@@ -2342,6 +2395,24 @@ function clampCatalogLimit(value: number | undefined): number {
   }
 
   return Math.max(1, Math.min(50, Math.round(value)));
+}
+
+function clampCatalogOffset(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.round(value));
+}
+
+function normalizeStartsWithFilter(value: string | null | undefined): string | null {
+  const trimmed = value?.trim().toUpperCase() ?? "";
+
+  if (!trimmed) {
+    return null;
+  }
+
+  return /^[A-Z]$/u.test(trimmed) ? trimmed : null;
 }
 
 function calculateDurationMs(startedAt: string, finishedAt: string | null): number | null {

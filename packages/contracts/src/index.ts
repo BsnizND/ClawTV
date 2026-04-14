@@ -156,6 +156,16 @@ export interface CatalogShowListResponse {
   shows: CatalogShowSummary[];
 }
 
+export interface CatalogMovieSummary {
+  id: string;
+  title: string;
+  year: number | null;
+}
+
+export interface CatalogMovieListResponse {
+  movies: CatalogMovieSummary[];
+}
+
 export interface CatalogCollectionSummary {
   id: string;
   title: string;
