@@ -7,6 +7,12 @@ log_dir="${HOME}/Library/Logs/ClawTV"
 launch_agent_dst="${HOME}/Library/LaunchAgents/com.clawtv.server.plist"
 env_file="${support_dir}/clawtv.env"
 uid="$(id -u)"
+pnpm_bin="${PNPM_BIN:-$(command -v pnpm || true)}"
+
+if [[ -z "${pnpm_bin}" ]]; then
+  echo "pnpm not found on PATH" >&2
+  exit 1
+fi
 
 mkdir -p "${support_dir}" "${support_dir}/data" "${log_dir}" "${HOME}/Library/LaunchAgents"
 
@@ -20,8 +26,8 @@ PORT=4390
 EOF
 fi
 
-/opt/homebrew/bin/pnpm --dir "${repo_root}" install --frozen-lockfile
-/opt/homebrew/bin/pnpm --dir "${repo_root}" build
+"${pnpm_bin}" --dir "${repo_root}" install --frozen-lockfile
+"${pnpm_bin}" --dir "${repo_root}" build
 
 cat > "${launch_agent_dst}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
