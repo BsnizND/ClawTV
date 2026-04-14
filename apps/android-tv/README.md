@@ -34,14 +34,14 @@ gradle -p apps/android-tv assembleDebug -PclawtvReceiverUrl=http://your-server:8
 
 ## Voice Defaults
 
-The receiver can be built with Kay defaults that are later overridden by the server:
+The receiver can be built with generic voice defaults that are later overridden by the server:
 
 ```bash
 gradle -p apps/android-tv assembleDebug \
   -PclawtvReceiverUrl=http://your-server:8787/ClawTV/ \
   -PclawtvReceiverFallbackUrls=https://your-tailnet-host/ClawTV/,http://your-lan-host:4390/ClawTV/ \
-  -PclawtvVoiceAssistantName=Kay \
-  -PclawtvVoiceAssistantId=kay \
+  -PclawtvVoiceAssistantName=Assistant \
+  -PclawtvVoiceAssistantId=default-assistant \
   -PclawtvVoiceGreetingText="Hey, what can I do for you?" \
   -PclawtvVoiceProcessingText="Looking into it." \
   -PclawtvVoiceAcknowledgementText="Got it." \
@@ -51,13 +51,10 @@ gradle -p apps/android-tv assembleDebug \
 Server-provided voice config can also include cue audio URLs for greeting, processing, acknowledgement, and unavailable states, so the TV can feel responsive before any dynamic reply finishes.
 The receiver also remembers the last working receiver origin at runtime and can fail over across the configured receiver candidates, so LAN and Tailscale/HTTPS targets can coexist without rebuilding for every network change.
 
-ClawTV's TV voice is Kay. Jay is a separate assistant identity and should only appear here if a deployment intentionally configures a Jay handoff.
-
 ## Notes
 
 - the first Android TV scaffold started as a `WebView` shell
 - real Shield testing showed that native `Media3` playback is the reliable path for HLS on this project
 - the app is still intentionally thin: it does not browse media, own queue logic, or become a second control surface
 - the current voice path can already hand freeform turns to OpenClaw when the server is configured for it
-- playback transport controls can still be handled locally for responsiveness, but the app should not grow its own freeform intent router
 - dynamic server reply audio is available when ElevenLabs credentials are configured on the server

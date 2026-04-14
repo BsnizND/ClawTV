@@ -20,15 +20,6 @@ The server serves the app and API under `/ClawTV` by default.
 - `PLEX_BASE_URL=http://127.0.0.1:32400/`
 - default server port: `8787` for development
 
-For voice-enabled deployments, the intended ClawTV persona is Kay:
-
-- `CLAWTV_VOICE_BACKEND=openclaw`
-- `CLAWTV_VOICE_ASSISTANT_NAME=Kay`
-- `CLAWTV_VOICE_ASSISTANT_ID=kay`
-- `CLAWTV_OPENCLAW_AGENT_ID=kay`
-
-If the OpenClaw handoff is unavailable, the runtime should fail clearly instead of silently falling back to mock or dummy behavior.
-
 ## Local Data
 
 By default, local development state lives under `data/clawtv.sqlite`.
@@ -52,8 +43,6 @@ That flow:
 - writes a launch agent into `~/Library/LaunchAgents`
 - creates an environment file if one does not already exist
 - starts the ClawTV server with `launchctl`
-
-The launchd service runs built output from the repo, not TypeScript sources directly. After pulling new code onto a deployed checkout, rebuild with `pnpm build` before restarting the service.
 
 ## Deployment Advice
 
