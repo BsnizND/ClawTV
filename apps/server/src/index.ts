@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +36,6 @@ const voiceCacheDir = join(serverDataDir, "voice-cache");
 const port = Number(process.env.PORT ?? 8787);
 const basePath = normalizeBasePath(process.env.CLAWTV_BASE_PATH ?? DEFAULT_BASE_PATH) || DEFAULT_BASE_PATH;
 const webDistDir = join(rootDir, "apps", "web", "dist");
-const serverBuildFingerprint = resolveServerBuildFingerprint();
 const execFileAsync = promisify(execFile);
 const db = openClawTvDatabase({
   rootDir,
@@ -943,7 +942,6 @@ function buildPlaybackSnapshot() {
 async function buildVoiceConfig(): Promise<VoiceConfig> {
   const backend = resolveVoiceBackend();
   const replyMode = resolveVoiceReplyMode();
-  const serveCueAudio = replyMode === "server-audio";
   const greetingText = pickCueLine("greeting", process.env.CLAWTV_VOICE_GREETING_TEXT?.trim() || "Hey, what can I do for you?");
   const processingText = pickCueLine("processing", process.env.CLAWTV_VOICE_PROCESSING_TEXT?.trim() || "Looking into it.");
   const acknowledgementText = pickCueLine("acknowledgement", process.env.CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT?.trim() || "Got it.");
@@ -952,16 +950,18 @@ async function buildVoiceConfig(): Promise<VoiceConfig> {
   return {
     enabled: parseBooleanEnv(process.env.CLAWTV_VOICE_ENABLED, true),
     backend,
-    assistantId: process.env.CLAWTV_VOICE_ASSISTANT_ID?.trim() || "default-assistant",
+    assistantId: process.env.CLAWTV_VOICE_ASSISTANT_ID?.trim()
+      || process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim()
+      || "main",
     assistantName: process.env.CLAWTV_VOICE_ASSISTANT_NAME?.trim() || "Assistant",
     greetingText,
     processingText,
     acknowledgementText,
     unavailableText,
-    greetingAudioUrl: serveCueAudio ? await resolveVoiceCueUrl("greeting", greetingText) : null,
-    processingAudioUrl: serveCueAudio ? await resolveVoiceCueUrl("processing", processingText) : null,
-    acknowledgementAudioUrl: serveCueAudio ? await resolveVoiceCueUrl("acknowledgement", acknowledgementText) : null,
-    unavailableAudioUrl: serveCueAudio ? await resolveVoiceCueUrl("unavailable", unavailableText) : null,
+    greetingAudioUrl: await resolveVoiceCueUrl("greeting", greetingText),
+    processingAudioUrl: await resolveVoiceCueUrl("processing", processingText),
+    acknowledgementAudioUrl: await resolveVoiceCueUrl("acknowledgement", acknowledgementText),
+    unavailableAudioUrl: await resolveVoiceCueUrl("unavailable", unavailableText),
     sttMode: "shield",
     replyMode
   };
@@ -969,16 +969,16 @@ async function buildVoiceConfig(): Promise<VoiceConfig> {
 
 async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: VoiceConfig): Promise<VoiceTurnResponse> {
   const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
-  const normalizedTranscript = transcript.toLowerCase();
   const playbackBefore = buildPlaybackSnapshot();
   const shouldResumeOriginalPlayback = body.playbackState === "playing" || body.playbackState === "loading";
   let action: VoiceTurnResponse["action"] = "none";
   let replyText = "";
   let expectsReply = false;
+  let ok = true;
 
   if (!transcript) {
     replyText = "I didn't catch that. Please try again.";
-  } else if (matchesVoiceCommand(normalizedTranscript, ["pause", "hold on", "stop playback"])) {
+  } else if (matchesVoiceCommand(transcript, ["pause", "hold on", "stop playback"])) {
     action = "pause";
     const result = db.applyCommand({
       commandName: "pause",
@@ -986,7 +986,7 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
       source: "voice"
     });
     replyText = result.message;
-  } else if (matchesVoiceCommand(normalizedTranscript, ["resume", "keep going", "continue playback"])) {
+  } else if (matchesVoiceCommand(transcript, ["resume", "keep going", "continue playback"])) {
     action = "resume";
     const result = db.applyCommand({
       commandName: "resume",
@@ -994,15 +994,7 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
       source: "voice"
     });
     replyText = result.message;
-  } else if (matchesVoiceCommand(normalizedTranscript, ["next", "skip this"])) {
-    action = "next";
-    const result = db.applyCommand({
-      commandName: "next",
-      payload: {},
-      source: "voice"
-    });
-    replyText = result.message;
-  } else if (matchesVoiceCommand(normalizedTranscript, ["stop", "turn it off"])) {
+  } else if (matchesVoiceCommand(transcript, ["stop", "turn it off"])) {
     action = "stop";
     const result = db.applyCommand({
       commandName: "stop",
@@ -1010,54 +1002,27 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
       source: "voice"
     });
     replyText = result.message;
-  } else if (asksForRemainingTime(normalizedTranscript)) {
-    replyText = describeRemainingRuntime(playbackBefore);
-  } else if (asksForRemainingEpisodes(normalizedTranscript)) {
-    replyText = describeRemainingEpisodes(playbackBefore);
-  } else if (asksForRemainingSeasons(normalizedTranscript)) {
-    replyText = describeRemainingSeasons(playbackBefore);
-  } else if (asksWhatIsPlaying(normalizedTranscript)) {
-    replyText = describeNowPlaying(playbackBefore);
   } else {
-    const curatorDecision = maybeBuildCuratorVoiceDecision(transcript);
-    if (curatorDecision) {
-      replyText = curatorDecision.replyText;
-      action = curatorDecision.commandName;
-      expectsReply = curatorDecision.expectsReply;
+    const decision = await buildConversationalReply({
+      transcript,
+      playback: playbackBefore,
+      voiceConfig
+    });
 
-      if (curatorDecision.commandName !== "none") {
-        const result = db.applyCommand({
-          commandName: curatorDecision.commandName,
-          payload: curatorDecision.payload,
-          source: "voice"
-        });
+    replyText = decision.replyText;
+    expectsReply = decision.expectsReply;
+    ok = decision.ok;
 
-        if (!result.ok) {
-          action = "none";
-          replyText = result.message;
-        }
-      }
-    } else {
-      const decision = await buildConversationalReply({
-        transcript,
-        playback: playbackBefore,
-        voiceConfig
+    if (decision.commandName !== "none") {
+      action = decision.commandName;
+      const result = db.applyCommand({
+        commandName: decision.commandName,
+        payload: decision.payload,
+        source: "voice"
       });
 
-      replyText = decision.replyText;
-      expectsReply = decision.expectsReply;
-
-      if (decision.commandName !== "none") {
-        action = decision.commandName;
-        const result = db.applyCommand({
-          commandName: decision.commandName,
-          payload: decision.payload,
-          source: "voice"
-        });
-
-        if (!result.ok || !replyText.trim()) {
-          replyText = result.message;
-        }
+      if (!result.ok || !replyText.trim()) {
+        replyText = result.message;
       }
     }
   }
@@ -1067,7 +1032,7 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
   const replyMode = replyAudioUrl ? "server-audio" : voiceConfig.replyMode;
 
   return {
-    ok: true,
+    ok,
     enabled: voiceConfig.enabled,
     backend: voiceConfig.backend,
     assistantId: voiceConfig.assistantId,
@@ -1097,34 +1062,29 @@ async function buildConversationalReply(input: {
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
 }): Promise<{
+  ok: boolean;
   replyText: string;
   commandName: VoiceTurnResponse["action"];
   payload: Record<string, unknown>;
   expectsReply: boolean;
 }> {
-  const curatorIntent = extractCuratorConversationIntent(input.transcript);
-
-  if (curatorIntent) {
-    const curatorReply = await buildCuratorConversationReply({
-      transcript: input.transcript,
-      playback: input.playback,
-      voiceConfig: input.voiceConfig,
-      intent: curatorIntent
-    });
-
-    if (curatorReply) {
-      return curatorReply;
-    }
-  }
-
   if (input.voiceConfig.backend === "openclaw") {
     const openClawReply = await runOpenClawVoiceTurn(input);
     if (openClawReply) {
       return openClawReply;
     }
+
+    return {
+      ok: false,
+      replyText: input.voiceConfig.unavailableText,
+      commandName: "none",
+      payload: {},
+      expectsReply: false
+    };
   }
 
   return {
+    ok: false,
     replyText: `I heard: "${input.transcript}". The live assistant handoff is not available right now, but the voice turn plumbing is ready.`,
     commandName: "none",
     payload: {},
@@ -1325,6 +1285,7 @@ async function buildCuratorConversationReply(input: {
     promptStyle: "broad" | "recommendation" | "best-of";
   };
 }): Promise<{
+  ok: boolean;
   replyText: string;
   commandName: VoiceTurnResponse["action"];
   payload: Record<string, unknown>;
@@ -1364,6 +1325,7 @@ async function buildCuratorConversationReply(input: {
     : "I can narrow it by vibe if you want. Want something cozy, chaotic, or all-timer?";
 
   return {
+    ok: true,
     replyText: `A few good ${recommendation.show} picks: ${picks}. ${followUp}`,
     commandName: "none",
     payload: {},
@@ -1382,13 +1344,14 @@ async function runOpenClawVoiceTurn(input: {
   };
   recommendation?: CatalogRecommendationResponse;
 }): Promise<{
+  ok: boolean;
   replyText: string;
   commandName: VoiceTurnResponse["action"];
   payload: Record<string, unknown>;
   expectsReply: boolean;
 } | null> {
   const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
-  const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.voiceConfig.assistantId || "default-assistant";
+  const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.voiceConfig.assistantId || "main";
   const thinking = process.env.CLAWTV_OPENCLAW_THINKING?.trim() || "minimal";
   const timeoutSeconds = Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90);
   const prompt = buildOpenClawPrompt(input);
@@ -1502,6 +1465,7 @@ function describePlaybackContextForPrompt(snapshot: PlaybackSnapshot): string {
 }
 
 function extractOpenClawReply(stdout: string): {
+  ok: boolean;
   replyText: string;
   commandName: VoiceTurnResponse["action"];
   payload: Record<string, unknown>;
@@ -1536,6 +1500,7 @@ function extractOpenClawReply(stdout: string): {
     };
 
     return {
+      ok: true,
       replyText: typeof decision.replyText === "string" && decision.replyText.trim().length > 0
         ? decision.replyText.trim()
         : rawText,
@@ -1565,6 +1530,7 @@ function extractOpenClawReply(stdout: string): {
         || null;
 
       return rawText ? {
+        ok: true,
         replyText: rawText,
         commandName: "none",
         payload: {},
@@ -1594,7 +1560,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function resolveVoiceBackend(): VoiceConfig["backend"] {
   const configured = process.env.CLAWTV_VOICE_BACKEND?.trim().toLowerCase();
-  return configured === "openclaw" ? "openclaw" : "mock";
+  return configured === "mock" ? "mock" : "openclaw";
 }
 
 function resolveVoiceReplyMode(): VoiceConfig["replyMode"] {
@@ -1604,7 +1570,7 @@ function resolveVoiceReplyMode(): VoiceConfig["replyMode"] {
 async function synthesizeVoiceReplyAudio(text: string): Promise<string | null> {
   return synthesizeVoiceAudio(text, {
     bucket: "replies",
-    defaultModelId: "eleven_flash_v2_5"
+    modelId: process.env.ELEVENLABS_MODEL_ID?.trim() || "eleven_flash_v2_5"
   });
 }
 
@@ -1614,7 +1580,9 @@ async function resolveVoiceCueUrl(
 ): Promise<string | null> {
   const synthesized = await synthesizeVoiceAudio(text, {
     bucket: `cues/${category}`,
-    defaultModelId: "eleven_flash_v2_5"
+    modelId: process.env.ELEVENLABS_CUE_MODEL_ID?.trim()
+      || process.env.ELEVENLABS_MODEL_ID?.trim()
+      || "eleven_flash_v2_5"
   });
 
   return synthesized ?? pickVoiceCueUrl(category);
@@ -1622,20 +1590,18 @@ async function resolveVoiceCueUrl(
 
 async function synthesizeVoiceAudio(inputText: string, options: {
   bucket: string;
-  defaultModelId: string;
+  modelId: string;
 }): Promise<string | null> {
   const text = inputText.trim();
-  const isCue = options.bucket.startsWith("cues/");
 
   if (!text.trim() || !isElevenLabsConfigured()) {
     return null;
   }
 
   const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
-  const voiceId = resolveElevenLabsVoiceId(isCue);
-  const modelId = resolveElevenLabsModelId(isCue, options.defaultModelId);
-  const voiceSettings = resolveElevenLabsVoiceSettings(isCue);
-  const cacheVersion = resolveElevenLabsCacheVersion(isCue);
+  const voiceId = process.env.ELEVENLABS_VOICE_ID?.trim();
+  const modelId = options.modelId;
+  const voiceSettings = resolveElevenLabsVoiceSettings(options.bucket.startsWith("cues/"));
 
   if (!apiKey || !voiceId) {
     return null;
@@ -1645,7 +1611,7 @@ async function synthesizeVoiceAudio(inputText: string, options: {
   mkdirSync(cacheDir, { recursive: true });
 
   const cacheKey = createHash("sha256")
-    .update(JSON.stringify({ voiceId, modelId, bucket: options.bucket, text, voiceSettings, cacheVersion }))
+    .update(JSON.stringify({ voiceId, modelId, bucket: options.bucket, text, voiceSettings }))
     .digest("hex");
   const fileName = `${cacheKey}.mp3`;
   const filePath = join(cacheDir, fileName);
@@ -1715,50 +1681,6 @@ function resolveElevenLabsVoiceSettings(isCue: boolean): Record<string, unknown>
     return isPlainObject(parsed) ? parsed : null;
   } catch (error) {
     console.warn(`Unable to parse ElevenLabs voice settings JSON (${isCue ? "cue" : "reply"}):`, error);
-    return null;
-  }
-}
-
-function resolveElevenLabsVoiceId(isCue: boolean): string | null {
-  const replyVoiceId = process.env.ELEVENLABS_VOICE_ID?.trim();
-
-  if (!isCue) {
-    return replyVoiceId || null;
-  }
-
-  return process.env.ELEVENLABS_CUE_VOICE_ID?.trim() || replyVoiceId || null;
-}
-
-function resolveElevenLabsModelId(isCue: boolean, fallbackModelId: string): string {
-  const replyModelId = process.env.ELEVENLABS_MODEL_ID?.trim();
-
-  if (!isCue) {
-    return replyModelId || fallbackModelId;
-  }
-
-  return process.env.ELEVENLABS_CUE_MODEL_ID?.trim() || replyModelId || fallbackModelId;
-}
-
-function resolveElevenLabsCacheVersion(isCue: boolean): string | null {
-  const automaticBuildSalt = serverBuildFingerprint;
-
-  if (!isCue) {
-    return process.env.ELEVENLABS_CACHE_VERSION?.trim()
-      || automaticBuildSalt
-      || null;
-  }
-
-  return process.env.ELEVENLABS_CUE_CACHE_VERSION?.trim()
-    || process.env.ELEVENLABS_CACHE_VERSION?.trim()
-    || automaticBuildSalt
-    || null;
-}
-
-function resolveServerBuildFingerprint(): string | null {
-  try {
-    const buildStats = statSync(fileURLToPath(import.meta.url));
-    return `${buildStats.mtimeMs}-${buildStats.size}`;
-  } catch {
     return null;
   }
 }
@@ -1846,7 +1768,29 @@ function serveFileFromRoot(root: string, relativeFilePath: string, headOnly: boo
 }
 
 function matchesVoiceCommand(transcript: string, phrases: string[]): boolean {
-  return phrases.some((phrase) => transcript.includes(phrase));
+  const normalized = normalizeVoiceCommandTranscript(transcript);
+
+  return phrases.some((phrase) => {
+    const normalizedPhrase = normalizeVoiceCommandTranscript(phrase);
+    const commandPattern = new RegExp(
+      `^(?:(?:hey|hi|okay|ok|please|assistant|jay|kay)\\s+)*(?:can you\\s+|could you\\s+|would you\\s+)?${escapeRegExp(normalizedPhrase)}(?:\\s+please)?$`,
+      "u"
+    );
+
+    return commandPattern.test(normalized);
+  });
+}
+
+function normalizeVoiceCommandTranscript(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function asksForRemainingTime(transcript: string): boolean {

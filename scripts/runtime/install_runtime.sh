@@ -20,6 +20,7 @@ if [[ ! -f "${env_file}" ]]; then
   cat > "${env_file}" <<EOF
 CLAWTV_BASE_PATH=/ClawTV
 CLAWTV_DATA_DIR="${support_dir}/data"
+CLAWTV_VOICE_BACKEND=openclaw
 PLEX_BASE_URL=http://127.0.0.1:32400/
 PORT=4390
 # PLEX_TOKEN=
