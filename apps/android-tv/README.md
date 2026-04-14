@@ -42,13 +42,12 @@ gradle -p apps/android-tv assembleDebug \
   -PclawtvReceiverFallbackUrls=https://your-tailnet-host/ClawTV/,http://your-lan-host:4390/ClawTV/ \
   -PclawtvVoiceAssistantName=Assistant \
   -PclawtvVoiceAssistantId=default-assistant \
-  -PclawtvVoiceGreetingText="Hey, what can I do for you?" \
   -PclawtvVoiceProcessingText="Looking into it." \
   -PclawtvVoiceAcknowledgementText="Got it." \
   -PclawtvVoiceUnavailableText="Voice chat is not available right now."
 ```
 
-Server-provided voice config can also include cue audio URLs for greeting, processing, acknowledgement, and unavailable states, so the TV can feel responsive before any dynamic reply finishes.
+Server-provided voice config can include cue audio URLs for processing, acknowledgement, and unavailable states, so the TV can feel responsive before any dynamic reply finishes.
 The receiver also remembers the last working receiver origin at runtime and can fail over across the configured receiver candidates, so LAN and Tailscale/HTTPS targets can coexist without rebuilding for every network change.
 
 ## Notes

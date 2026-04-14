@@ -18,7 +18,7 @@ val configuredReceiverFallbackUrlsJson = providers.gradleProperty("clawtvReceive
     ?: "[]"
 val defaultVoiceAssistantName = providers.gradleProperty("clawtvVoiceAssistantName").orNull ?: "Assistant"
 val defaultVoiceAssistantId = providers.gradleProperty("clawtvVoiceAssistantId").orNull ?: "main"
-val defaultVoiceGreetingText = providers.gradleProperty("clawtvVoiceGreetingText").orNull ?: "Hey, what can I do for you?"
+val defaultVoiceGreetingText = providers.gradleProperty("clawtvVoiceGreetingText").orNull ?: ""
 val defaultVoiceProcessingText = providers.gradleProperty("clawtvVoiceProcessingText").orNull ?: "Looking into it."
 val defaultVoiceAcknowledgementText = providers.gradleProperty("clawtvVoiceAcknowledgementText").orNull ?: "Got you."
 val defaultVoiceUnavailableText = providers.gradleProperty("clawtvVoiceUnavailableText").orNull ?: "Voice chat is not available right now."

@@ -942,7 +942,8 @@ function buildPlaybackSnapshot() {
 async function buildVoiceConfig(): Promise<VoiceConfig> {
   const backend = resolveVoiceBackend();
   const replyMode = resolveVoiceReplyMode();
-  const greetingText = pickCueLine("greeting", process.env.CLAWTV_VOICE_GREETING_TEXT?.trim() || "Hey, what can I do for you?");
+  // Wake-up speech is intentionally disabled so press-and-hold enters listening immediately.
+  const greetingText = "";
   const processingText = pickCueLine("processing", process.env.CLAWTV_VOICE_PROCESSING_TEXT?.trim() || "Looking into it.");
   const acknowledgementText = pickCueLine("acknowledgement", process.env.CLAWTV_VOICE_ACKNOWLEDGEMENT_TEXT?.trim() || "Got it.");
   const unavailableText = pickCueLine("unavailable", process.env.CLAWTV_VOICE_UNAVAILABLE_TEXT?.trim() || "Voice chat is not available right now.");
@@ -958,7 +959,7 @@ async function buildVoiceConfig(): Promise<VoiceConfig> {
     processingText,
     acknowledgementText,
     unavailableText,
-    greetingAudioUrl: await resolveVoiceCueUrl("greeting", greetingText),
+    greetingAudioUrl: null,
     processingAudioUrl: await resolveVoiceCueUrl("processing", processingText),
     acknowledgementAudioUrl: await resolveVoiceCueUrl("acknowledgement", acknowledgementText),
     unavailableAudioUrl: await resolveVoiceCueUrl("unavailable", unavailableText),
