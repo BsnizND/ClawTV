@@ -12,7 +12,7 @@ const handledReceiverCommandStorageKey = "clawtv:last-handled-receiver-command";
 const refreshRecoveryGraceMs = 15000;
 
 const fallbackPlayback: PlaybackSnapshot = {
-  sessionId: "living-room-shield",
+  sessionId: "primary-tv",
   queueId: null,
   playbackState: "idle",
   playbackPositionMs: 0,

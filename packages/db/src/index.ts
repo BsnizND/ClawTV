@@ -1854,6 +1854,14 @@ export class ClawTvDatabase {
 
   private ensureDefaultSession(): void {
     const now = new Date().toISOString();
+    const existingSession = this.getActiveSessionRow();
+    const sessionId = process.env.CLAWTV_DEFAULT_SESSION_ID?.trim() || "primary-tv";
+    const sessionName = process.env.CLAWTV_DEFAULT_SESSION_NAME?.trim() || "Primary TV";
+    const clientId = process.env.CLAWTV_DEFAULT_CLIENT_ID?.trim() || "tv-receiver";
+
+    if (existingSession) {
+      return;
+    }
 
     this.db.prepare(`
       INSERT INTO sessions (
@@ -1866,10 +1874,10 @@ export class ClawTvDatabase {
         last_seen_at,
         status
       ) VALUES (
-        'living-room-shield',
-        'Living Room Shield',
+        :sessionId,
+        :sessionName,
         'tv',
-        'shield-web-client',
+        :clientId,
         1,
         1,
         :now,
@@ -1882,7 +1890,7 @@ export class ClawTvDatabase {
         claimed = excluded.claimed,
         active = excluded.active,
         status = excluded.status
-    `).run({ now });
+    `).run({ now, sessionId, sessionName, clientId });
 
     this.db.prepare(`
       INSERT INTO playback_state (
@@ -1897,7 +1905,7 @@ export class ClawTvDatabase {
         receiver_command_at,
         updated_at
       ) VALUES (
-        'living-room-shield',
+        :sessionId,
         NULL,
         NULL,
         'idle',
@@ -1909,7 +1917,7 @@ export class ClawTvDatabase {
         :now
       )
       ON CONFLICT(session_id) DO NOTHING
-    `).run({ now });
+    `).run({ now, sessionId });
   }
 
   private getActiveSessionRow(): SessionRow | undefined {

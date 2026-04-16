@@ -225,7 +225,7 @@ Usage:
   clawtv list-shows [--limit 20]
   clawtv list-collections [--limit 20]
   clawtv list-networks [--limit 20]
-  clawtv list-network-shows --network "HGTV" [--limit 20]
+  clawtv list-network-shows --network "Example Network" [--limit 20]
   clawtv recently-added [--type movie] [--limit 10]
   clawtv recommend-show --show "Seinfeld" [--strategy default|random|highly-rated] [--limit 3]
   clawtv sync-status
@@ -234,8 +234,8 @@ Usage:
   clawtv play --title "The Matrix"
   clawtv play-latest --series "The Late Show with Stephen Colbert"
   clawtv shuffle --show "Bluey"
-  clawtv shuffle --network "HGTV"
-  clawtv shuffle --collection "HGTV"
+  clawtv shuffle --network "Example Network"
+  clawtv shuffle --collection "Favorites"
   clawtv pause
   clawtv resume
   clawtv seek --by 30s

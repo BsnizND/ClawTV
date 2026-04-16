@@ -1843,7 +1843,7 @@ function matchesVoiceCommand(transcript: string, phrases: string[]): boolean {
   return phrases.some((phrase) => {
     const normalizedPhrase = normalizeVoiceCommandTranscript(phrase);
     const commandPattern = new RegExp(
-      `^(?:(?:hey|hi|okay|ok|please|assistant|jay|kay)\\s+)*(?:can you\\s+|could you\\s+|would you\\s+)?${escapeRegExp(normalizedPhrase)}(?:\\s+please)?$`,
+      `^(?:(?:hey|hi|okay|ok|please|assistant)\\s+)*(?:can you\\s+|could you\\s+|would you\\s+)?${escapeRegExp(normalizedPhrase)}(?:\\s+please)?$`,
       "u"
     );
 

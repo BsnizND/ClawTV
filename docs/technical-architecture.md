@@ -351,7 +351,7 @@ Resolution:
 
 Examples:
 
-- shuffle HGTV shows
+- shuffle network shows
 - shuffle The Office
 
 Resolution:

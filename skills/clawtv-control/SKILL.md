@@ -123,7 +123,7 @@ python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py shuffle --show 
 Shuffle a collection:
 
 ```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py shuffle --collection "HGTV"
+python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py shuffle --collection "Favorites"
 ```
 
 Transport controls:
