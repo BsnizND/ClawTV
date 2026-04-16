@@ -11,7 +11,7 @@ export type PlaybackAutoplayStatus = "unknown" | "started" | "blocked" | "failed
 export type ReceiverCommandType = "refresh";
 export type VoiceReplyMode = "client-tts" | "server-audio" | "none";
 export type VoiceSttMode = "shield" | "server";
-export type VoiceBackendMode = "mock" | "openclaw";
+export type VoiceBackendMode = "mock" | "openclaw" | "openai";
 export type RecommendationStrategy = "default" | "random" | "highly-rated";
 
 export interface SessionSummary {
@@ -50,6 +50,7 @@ export interface MediaItemSummary {
   title: string;
   mediaType: MediaType;
   showTitle: string | null;
+  summary?: string | null;
   year: number | null;
   originallyAvailableAt: string | null;
   seasonNumber?: number | null;
