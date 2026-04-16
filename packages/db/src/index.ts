@@ -2159,7 +2159,45 @@ export class ClawTvDatabase {
         LIMIT 5
       `).all({ titlePattern: `%${title}%` }) as unknown as MediaRow[];
 
-      return this.expandPlayableMatches(fuzzyMatches.map(mapMediaRow));
+      const playableFuzzyMatches = this.expandPlayableMatches(fuzzyMatches.map(mapMediaRow));
+      if (playableFuzzyMatches.length > 0) {
+        return playableFuzzyMatches;
+      }
+
+      const summaryMatches = this.db.prepare(`
+        SELECT
+          mi.id,
+          mi.title,
+          mi.media_type,
+          show_mi.title AS show_title,
+          mi.summary,
+          mi.year,
+          mi.originally_available_at
+        FROM media_items mi
+        LEFT JOIN episodes e ON e.media_item_id = mi.id
+        LEFT JOIN media_items show_mi ON show_mi.id = e.show_id
+        WHERE mi.media_type = 'episode'
+          AND (
+            lower(COALESCE(mi.summary, '')) LIKE lower(:titlePattern)
+            OR lower(COALESCE(show_mi.title, '')) LIKE lower(:titlePattern)
+          )
+        ORDER BY
+          CASE
+            WHEN lower(COALESCE(mi.summary, '')) = lower(:title) THEN 0
+            WHEN lower(COALESCE(mi.summary, '')) LIKE lower(:titlePrefix) THEN 1
+            ELSE 2
+          END,
+          COALESCE(mi.originally_available_at, '') DESC,
+          mi.title ASC
+        LIMIT 5
+      `).all({
+        title,
+        titlePattern: `%${title}%`,
+        titlePrefix: `${title}%`
+      }) as unknown as MediaRow[];
+
+      const playableSummaryMatches = this.expandPlayableMatches(summaryMatches.map(mapMediaRow));
+      return playableSummaryMatches.length === 1 ? playableSummaryMatches : [];
     }
 
     if (commandName === "play-latest") {

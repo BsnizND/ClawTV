@@ -1405,23 +1405,26 @@ async function runOpenClawVoiceTurn(input: {
 } | null> {
   const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
   const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.voiceConfig.assistantId || "main";
-  const thinking = process.env.CLAWTV_OPENCLAW_THINKING?.trim() || "minimal";
+  const thinking = process.env.CLAWTV_OPENCLAW_THINKING?.trim();
   const timeoutSeconds = Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90);
   const prompt = buildOpenClawPrompt(input);
+  const args = [
+    "agent",
+    "--agent",
+    agentId,
+    "--message",
+    prompt,
+    "--timeout",
+    String(Number.isFinite(timeoutSeconds) ? timeoutSeconds : 90),
+    "--json"
+  ];
+
+  if (thinking) {
+    args.splice(5, 0, "--thinking", thinking);
+  }
 
   try {
-    const { stdout } = await execFileAsync(command, [
-      "agent",
-      "--agent",
-      agentId,
-      "--message",
-      prompt,
-      "--thinking",
-      thinking,
-      "--timeout",
-      String(Number.isFinite(timeoutSeconds) ? timeoutSeconds : 90),
-      "--json"
-    ], {
+    const { stdout } = await execFileAsync(command, args, {
       env: {
         ...process.env,
         PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
@@ -1466,6 +1469,9 @@ function buildOpenClawPrompt(input: {
     "replyText should sound warm, direct, playful, and human. Keep it concise.",
     "Reason first. The user's words may refer to a person, actor, host, network, title, topic, vague memory, or shorthand; do not assume ambiguous phrases are show titles.",
     "If you have access to tools or skills, you may inspect the local ClawTV catalog, current playback, or web context before deciding. Choose tools because your reasoning needs them, not because of a fixed sequence.",
+    "For remembered-description requests like scenes, quotes, clubs, guest stars, or nicknames, identify the canonical title first and then verify the exact local ClawTV match before issuing playback.",
+    "If web search or local reasoning gives you a canonical title, search ClawTV again and use the actual local title in payload. Do not send play for a guessed alias, nickname, or theme phrase.",
+    "A single strong local summary match can count as verification, but if multiple local items plausibly match, ask one short clarifying question instead of guessing.",
     "If a local catalog lookup finds mentions of a person/topic in episodes but no clear show target, ask one short clarifying question and mention the plausible show names.",
     "If the user asks about what is currently on, remaining runtime, remaining episodes, or remaining seasons, use the supplied playback context only.",
     "If the user asks to play a confirmed specific title, use commandName play and payload {\"title\":\"...\"}.",
