@@ -1478,7 +1478,9 @@ class MainActivity : AppCompatActivity() {
             assistantName = payload.optString("assistantName", BuildConfig.CLAWTV_VOICE_ASSISTANT_NAME).ifBlank {
                 BuildConfig.CLAWTV_VOICE_ASSISTANT_NAME
             },
-            greetingText = payload.optString("greetingText", BuildConfig.CLAWTV_VOICE_GREETING_TEXT).ifBlank {
+            greetingText = if (payload.has("greetingText")) {
+                payload.optString("greetingText")
+            } else {
                 BuildConfig.CLAWTV_VOICE_GREETING_TEXT
             },
             processingText = payload.optString("processingText", BuildConfig.CLAWTV_VOICE_PROCESSING_TEXT).ifBlank {
