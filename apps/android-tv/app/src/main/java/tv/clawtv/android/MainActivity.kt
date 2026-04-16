@@ -76,6 +76,8 @@ class MainActivity : AppCompatActivity() {
     private var loadedStreamUrl: String? = null
     private var lastReportedState: String? = null
     private var lastAutoAdvancedItemId: String? = null
+    private var pendingReloadItemId: String? = null
+    private var pendingReloadPositionMs: Long = 0L
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
     private var voicePromptPlayer: MediaPlayer? = null
@@ -206,6 +208,8 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onRenderedFirstFrame() {
                     Log.i(TAG, "Rendered first frame at position=${exoPlayer.currentPosition}")
+                    pendingReloadItemId = null
+                    pendingReloadPositionMs = 0L
                 }
 
                 override fun onTracksChanged(tracks: Tracks) {
@@ -1124,7 +1128,7 @@ class MainActivity : AppCompatActivity() {
             || (snapshot.controlRevisionChanged && snapshot.playbackState == "loading")
 
         if (shouldReloadStream) {
-            reloadStream(streamUrl, snapshot.playbackPositionMs.toLong())
+            reloadStream(streamUrl, snapshot.playbackPositionMs.toLong(), snapshot.itemId)
         } else if (snapshot.controlRevisionChanged && snapshot.playbackPositionMs > 0) {
             val driftMs = abs(player.currentPosition - snapshot.playbackPositionMs.toLong())
             if (driftMs > RESYNC_DRIFT_MS) {
@@ -1168,16 +1172,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun reloadStream(streamUrl: String, playbackPositionMs: Long) {
-        Log.i(TAG, "Reloading stream url=$streamUrl playbackPositionMs=$playbackPositionMs")
+    private fun reloadStream(streamUrl: String, playbackPositionMs: Long, itemId: String?) {
+        val reloadPositionMs = playbackPositionMs.coerceAtLeast(0L)
+        Log.i(TAG, "Reloading stream url=$streamUrl playbackPositionMs=$reloadPositionMs")
         loadedStreamUrl = streamUrl
         lastReportedState = null
+        pendingReloadItemId = itemId
+        pendingReloadPositionMs = reloadPositionMs
         player.stop()
         player.clearMediaItems()
-        player.setMediaItem(MediaItem.fromUri(streamUrl))
+        player.setMediaItem(MediaItem.Builder().setUri(streamUrl).setMediaId(itemId ?: streamUrl).build())
         player.prepare()
-        if (playbackPositionMs > 0) {
-            player.seekTo(playbackPositionMs)
+        if (reloadPositionMs > 0) {
+            player.seekTo(reloadPositionMs)
         }
     }
 
@@ -1185,7 +1192,7 @@ class MainActivity : AppCompatActivity() {
         val snapshot = currentSnapshot ?: return
         val body = JSONObject().apply {
             put("state", state)
-            put("positionMs", player.currentPosition)
+            put("positionMs", positionMsForReport(snapshot))
             put("sessionId", snapshot.sessionId)
             put("currentItemId", snapshot.itemId)
         }
@@ -1206,7 +1213,7 @@ class MainActivity : AppCompatActivity() {
     private fun syncPositionOnly() {
         val snapshot = currentSnapshot ?: return
         val body = JSONObject().apply {
-            put("positionMs", player.currentPosition)
+            put("positionMs", positionMsForReport(snapshot))
             put("sessionId", snapshot.sessionId)
             put("currentItemId", snapshot.itemId)
         }
@@ -1216,6 +1223,14 @@ class MainActivity : AppCompatActivity() {
                 postJson("api/playback/state", body)
             }
         }
+    }
+
+    private fun positionMsForReport(snapshot: PlaybackSnapshotPayload): Long {
+        if (snapshot.itemId != null && snapshot.itemId == pendingReloadItemId) {
+            return pendingReloadPositionMs
+        }
+
+        return player.currentPosition.coerceAtLeast(0L)
     }
 
     private fun acknowledgeReceiverCommand(commandId: String, sessionId: String?) {
