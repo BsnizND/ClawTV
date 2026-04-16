@@ -92,6 +92,8 @@ class MainActivity : AppCompatActivity() {
     private var latestTranscript: String? = null
     private var speechListeningActive = false
     private var awaitingManualVoiceReply = false
+    private var followUpListeningActive = false
+    private var followUpResumePlayback = false
     private var destroyed = false
     private var pendingVoiceLongPressKeyCode: Int? = null
     private var voiceLongPressTriggered = false
@@ -113,6 +115,10 @@ class MainActivity : AppCompatActivity() {
 
     private val finishVoiceModeRunnable = Runnable {
         finishVoiceMode(voiceDismissResumePlayback)
+    }
+
+    private val followUpVoiceListenRunnable = Runnable {
+        beginFollowUpListening()
     }
 
     private val voiceLongPressRunnable = Runnable {
@@ -489,8 +495,11 @@ class MainActivity : AppCompatActivity() {
 
         voiceModeActive = true
         latestTranscript = null
+        followUpListeningActive = false
+        followUpResumePlayback = false
         voicePlaybackStateBeforeVoice = currentSnapshot?.playbackState
         mainHandler.removeCallbacks(finishVoiceModeRunnable)
+        mainHandler.removeCallbacks(followUpVoiceListenRunnable)
         showVoiceOverlay(
             title = getString(R.string.voice_title_listening),
             message = ""
@@ -632,6 +641,13 @@ class MainActivity : AppCompatActivity() {
 
                     override fun onError(error: Int) {
                         speechListeningActive = false
+                        if (shouldDismissFollowUpOnNoSpeech(error)) {
+                            followUpListeningActive = false
+                            awaitingManualVoiceReply = false
+                            scheduleVoiceDismiss(resumePlayback = followUpResumePlayback, delayMs = VOICE_FOLLOW_UP_DISMISS_MS)
+                            return
+                        }
+
                         if (shouldHoldVoiceConversationOpen(error)) {
                             showVoiceOverlay(
                                 title = voiceProfile.assistantName,
@@ -651,6 +667,7 @@ class MainActivity : AppCompatActivity() {
 
                     override fun onResults(results: Bundle?) {
                         speechListeningActive = false
+                        followUpListeningActive = false
                         val transcript = extractTranscript(results)
                         latestTranscript = transcript
                         handleVoiceTranscript(transcript)
@@ -856,16 +873,20 @@ class MainActivity : AppCompatActivity() {
     private fun scheduleVoiceDismiss(resumePlayback: Boolean, delayMs: Long) {
         voiceDismissResumePlayback = resumePlayback
         mainHandler.removeCallbacks(finishVoiceModeRunnable)
+        mainHandler.removeCallbacks(followUpVoiceListenRunnable)
         mainHandler.postDelayed(finishVoiceModeRunnable, delayMs)
     }
 
     private fun finishVoiceMode(resumePlayback: Boolean) {
         mainHandler.removeCallbacks(finishVoiceModeRunnable)
+        mainHandler.removeCallbacks(followUpVoiceListenRunnable)
         pendingUtteranceId = null
         pendingUtteranceAction = null
         stopVoicePromptPlayback()
         voiceModeActive = false
         awaitingManualVoiceReply = false
+        followUpListeningActive = false
+        followUpResumePlayback = false
         speechListeningActive = false
         voicePlaybackStateBeforeVoice = null
         voiceDismissResumePlayback = false
@@ -880,6 +901,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleVoiceTranscript(transcript: String?) {
         awaitingManualVoiceReply = false
+        followUpListeningActive = false
 
         if (transcript.isNullOrBlank()) {
             showVoiceOverlay(
@@ -956,7 +978,7 @@ class MainActivity : AppCompatActivity() {
 
                 val onComplete = {
                     if (voiceTurn.expectsReply) {
-                        parkVoiceConversationForReply()
+                        parkVoiceConversationForReply(resumePlayback = voiceTurn.resumePlayback)
                     } else {
                         scheduleVoiceDismiss(
                             resumePlayback = voiceTurn.resumePlayback,
@@ -988,7 +1010,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (!spokeReply) {
                     if (voiceTurn.expectsReply) {
-                        parkVoiceConversationForReply()
+                        parkVoiceConversationForReply(resumePlayback = voiceTurn.resumePlayback)
                     } else {
                         scheduleVoiceDismiss(
                             resumePlayback = voiceTurn.resumePlayback,
@@ -1000,13 +1022,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun parkVoiceConversationForReply() {
+    private fun parkVoiceConversationForReply(resumePlayback: Boolean) {
         if (!voiceModeActive || destroyed) {
             return
         }
 
         awaitingManualVoiceReply = true
+        followUpListeningActive = false
+        followUpResumePlayback = resumePlayback
         speechListeningActive = false
+        mainHandler.removeCallbacks(followUpVoiceListenRunnable)
+        mainHandler.postDelayed(followUpVoiceListenRunnable, VOICE_FOLLOW_UP_DELAY_MS)
     }
 
     private fun beginManualFollowUpListening() {
@@ -1014,8 +1040,18 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        mainHandler.removeCallbacks(followUpVoiceListenRunnable)
+        beginFollowUpListening()
+    }
+
+    private fun beginFollowUpListening() {
+        if (!voiceModeActive || destroyed || speechListeningActive) {
+            return
+        }
+
         latestTranscript = null
         awaitingManualVoiceReply = false
+        followUpListeningActive = true
         stopVoicePromptPlayback()
         textToSpeech?.stop()
         pendingUtteranceId = null
@@ -1024,11 +1060,15 @@ class MainActivity : AppCompatActivity() {
             title = getString(R.string.voice_title_listening),
             message = ""
         )
-        mainHandler.postDelayed({ startSpeechListening() }, VOICE_FOLLOW_UP_DELAY_MS)
+        startSpeechListening()
     }
 
     private fun shouldHoldVoiceConversationOpen(error: Int): Boolean {
         if (!voiceModeActive) {
+            return false
+        }
+
+        if (!awaitingManualVoiceReply) {
             return false
         }
 
@@ -1038,6 +1078,11 @@ class MainActivity : AppCompatActivity() {
 
         awaitingManualVoiceReply = true
         return true
+    }
+
+    private fun shouldDismissFollowUpOnNoSpeech(error: Int): Boolean {
+        return followUpListeningActive
+            && (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
     }
 
     private fun sendCommand(commandName: String, body: JSONObject = JSONObject()) {
@@ -1609,6 +1654,7 @@ class MainActivity : AppCompatActivity() {
         private const val DEFAULT_READ_TIMEOUT_MS = 5_000
         private const val VOICE_TURN_TIMEOUT_MS = 120_000
         private const val VOICE_FOLLOW_UP_DELAY_MS = 850L
+        private const val VOICE_FOLLOW_UP_DISMISS_MS = 450L
         private const val VOICE_REPLY_LINGER_MS = 7_500L
         private const val VOICE_COMPLETE_SILENCE_MS = 1_800L
         private const val VOICE_POSSIBLY_COMPLETE_SILENCE_MS = 1_300L
