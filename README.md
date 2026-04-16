@@ -65,7 +65,7 @@ export PLEX_TOKEN=your-plex-token
 export CLAWTV_PLEX_SYNC_INTERVAL_MINUTES=15
 export CLAWTV_PLEX_REFRESH_TIMEOUT_SECONDS=60
 export CLAWTV_VOICE_ENABLED=true
-export CLAWTV_VOICE_BACKEND=openai
+export CLAWTV_VOICE_BACKEND=openclaw
 export CLAWTV_VOICE_ASSISTANT_NAME=Assistant
 export CLAWTV_VOICE_ASSISTANT_ID=main
 export CLAWTV_VOICE_PROCESSING_TEXT="Looking into it."
@@ -75,10 +75,6 @@ export CLAWTV_VOICE_PROCESSING_VARIANTS="Looking into it.|Give me a second.|Work
 export CLAWTV_VOICE_ACKNOWLEDGEMENT_VARIANTS="Okay.|Got it.|On it."
 export CLAWTV_VOICE_UNAVAILABLE_VARIANTS="Voice chat is not available right now.|I can't help with that right now.|Try again in a moment."
 export CLAWTV_VOICE_AUDIO_PACK=default
-export OPENAI_API_KEY=your-openai-api-key
-export CLAWTV_OPENAI_MODEL=gpt-5.4
-export CLAWTV_OPENAI_WEB_SEARCH=1
-export CLAWTV_OPENAI_TIMEOUT_SECONDS=45
 export CLAWTV_OPENCLAW_AGENT_ID=your-assistant-id
 export CLAWTV_OPENCLAW_THINKING=minimal
 export CLAWTV_OPENCLAW_TIMEOUT_SECONDS=90
@@ -142,8 +138,7 @@ The repo now has a generic, configurable voice path instead of a hard-coded assi
 - Android TV captures first-pass STT with `SpeechRecognizer`
 - the receiver loads assistant config from `GET /api/voice/config`
 - voice turns post to `POST /api/voice/turn`
-- with `CLAWTV_VOICE_BACKEND=openai`, the server gives the model catalog/playback tools and lets the agent decide what to inspect before returning a validated ClawTV command
-- with `CLAWTV_VOICE_BACKEND=openclaw`, the server can hand general conversation turns to an OpenClaw agent
+- with `CLAWTV_VOICE_BACKEND=openclaw`, the server hands voice turns to an OpenClaw agent and validates the returned ClawTV command
 - when ElevenLabs credentials are configured, both cue audio and reply audio can be cached and streamed back to the TV instead of relying on client TTS
 - when live replies are using client TTS, cue audio URLs stay empty so the same device voice is used for snippets too
 - cue snippets inherit the live reply voice by default; only set `ELEVENLABS_CUE_*` overrides when you intentionally want a different cue voice
