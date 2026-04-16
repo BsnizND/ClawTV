@@ -1060,21 +1060,16 @@ async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse>
   }
 
   if (shouldConnect) {
-    await runAdbCommand(adbPath, ["connect", deviceSerial]);
+    await prepareAdbDevice(adbPath, deviceSerial);
   }
 
-  await runAdbCommand(adbPath, [
-    "-s",
+  await launchLiveTvIntent({
+    adbPath,
     deviceSerial,
-    "shell",
-    "am",
-    "start",
-    "-a",
-    "android.intent.action.VIEW",
-    "-d",
     channelUrl,
-    packageName
-  ]);
+    packageName,
+    shouldConnect
+  });
 
   return {
     ok: true,
@@ -1088,6 +1083,52 @@ async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse>
   };
 }
 
+async function prepareAdbDevice(adbPath: string, deviceSerial: string): Promise<void> {
+  await runAdbCommandBestEffort(adbPath, ["kill-server"]);
+  await runAdbCommand(adbPath, ["start-server"]);
+  await runAdbCommandBestEffort(adbPath, ["disconnect", deviceSerial]);
+  await runAdbCommand(adbPath, ["connect", deviceSerial]);
+  await delay(750);
+}
+
+async function launchLiveTvIntent(input: {
+  adbPath: string;
+  deviceSerial: string;
+  channelUrl: string;
+  packageName: string;
+  shouldConnect: boolean;
+}): Promise<void> {
+  const launchArgs = [
+    "-s",
+    input.deviceSerial,
+    "shell",
+    "am",
+    "start",
+    "-a",
+    "android.intent.action.VIEW",
+    "-d",
+    input.channelUrl,
+    input.packageName
+  ];
+
+  try {
+    await runAdbCommand(input.adbPath, launchArgs);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "ADB launch failed.";
+    const retryable = /device offline|cannot connect to daemon|adb server didn't ack/iu.test(message);
+
+    if (!retryable) {
+      throw error;
+    }
+
+    if (input.shouldConnect) {
+      await prepareAdbDevice(input.adbPath, input.deviceSerial);
+    }
+
+    await runAdbCommand(input.adbPath, launchArgs);
+  }
+}
+
 async function runAdbCommand(adbPath: string, args: string[]): Promise<void> {
   try {
     await execFileAsync(adbPath, args);
@@ -1097,6 +1138,20 @@ async function runAdbCommand(adbPath: string, args: string[]): Promise<void> {
       : "ADB command failed.";
     throw new Error(`${message} Command: ${adbPath} ${args.join(" ")}`);
   }
+}
+
+async function runAdbCommandBestEffort(adbPath: string, args: string[]): Promise<void> {
+  try {
+    await execFileAsync(adbPath, args);
+  } catch {
+    // Best-effort cleanup commands should not block recovery.
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => {
+    setTimeout(resolveDelay, ms);
+  });
 }
 
 async function buildVoiceConfig(): Promise<VoiceConfig> {
