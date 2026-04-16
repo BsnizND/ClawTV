@@ -32,8 +32,8 @@ android {
         applicationId = "tv.clawtv.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
 
         buildConfigField("String", "CLAWTV_RECEIVER_URL", "\"${escapeBuildConfig(configuredReceiverUrl)}\"")
         buildConfigField("String", "CLAWTV_RECEIVER_FALLBACK_URLS_JSON", "\"${escapeBuildConfig(configuredReceiverFallbackUrlsJson)}\"")

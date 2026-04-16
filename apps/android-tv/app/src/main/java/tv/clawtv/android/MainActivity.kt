@@ -488,7 +488,7 @@ class MainActivity : AppCompatActivity() {
         voicePlaybackStateBeforeVoice = currentSnapshot?.playbackState
         mainHandler.removeCallbacks(finishVoiceModeRunnable)
         showVoiceOverlay(
-            title = getString(R.string.voice_title_waking_format, voiceProfile.assistantName),
+            title = getString(R.string.voice_title_listening),
             message = ""
         )
 
