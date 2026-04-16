@@ -12,6 +12,8 @@ import type {
   CheckNewContentResponse,
   CommandName,
   CommandResult,
+  LiveTvTuneRequest,
+  LiveTvTuneResponse,
   PlaybackContext,
   PlaybackSnapshot,
   SeekCommandRequest,
@@ -188,6 +190,20 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (rawCommand === "live-tv") {
+      const flags = parseKeyValueFlags(restArgs);
+      if (!flags.channel) {
+        throw new Error("live-tv requires --channel \"...\"");
+      }
+
+      const result = await postJson<LiveTvTuneResponse>("api/live-tv/tune", {
+        provider: flags.provider === "youtube-tv" ? "youtube-tv" : "youtube-tv",
+        channel: flags.channel
+      } satisfies LiveTvTuneRequest);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (rawCommand === "seek") {
       const payload = parseSeekFlags(restArgs);
       const result = await postJson<CommandResult>("api/commands/seek", payload);
@@ -231,6 +247,7 @@ Usage:
   clawtv sync-status
   clawtv sync-plex --mode full-sync [--library "TV Shows"]
   clawtv check-new-content [--library "TV Shows"] [--limit 10]
+  clawtv live-tv --provider youtube-tv --channel cnn
   clawtv play --title "The Matrix"
   clawtv play-latest --series "The Late Show with Stephen Colbert"
   clawtv shuffle --show "Bluey"

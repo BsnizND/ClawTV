@@ -78,6 +78,11 @@ export CLAWTV_VOICE_AUDIO_PACK=default
 export CLAWTV_OPENCLAW_AGENT_ID=your-assistant-id
 export CLAWTV_OPENCLAW_THINKING=minimal
 export CLAWTV_OPENCLAW_TIMEOUT_SECONDS=90
+export CLAWTV_ANDROID_TV_ADB_SERIAL=192.168.1.50:5555
+export CLAWTV_ANDROID_TV_ADB_CONNECT=true
+export CLAWTV_ANDROID_TV_ADB_PATH=adb
+export CLAWTV_YOUTUBE_TV_PACKAGE=com.google.android.youtube.tvunplugged
+export CLAWTV_YOUTUBE_TV_CHANNEL_URLS_JSON='{"cnn":"https://tv.youtube.com/watch/TJSwwtXbvLw"}'
 export ELEVENLABS_API_KEY=your-elevenlabs-api-key
 export ELEVENLABS_VOICE_ID=your-elevenlabs-voice-id
 export ELEVENLABS_MODEL_ID=eleven_flash_v2_5
@@ -101,6 +106,7 @@ pnpm --filter @clawtv/cli dev search --query "john oliver" --type episode
 pnpm --filter @clawtv/cli dev list-shows --limit 20
 pnpm --filter @clawtv/cli dev recently-added --type movie --limit 10
 pnpm --filter @clawtv/cli dev play --title "The Matrix"
+pnpm --filter @clawtv/cli dev live-tv --provider youtube-tv --channel cnn
 pnpm --filter @clawtv/cli dev play-latest --series "Last Week Tonight with John Oliver"
 pnpm --filter @clawtv/cli dev shuffle --show "Bluey"
 pnpm --filter @clawtv/cli dev pause
@@ -145,6 +151,17 @@ The repo now has a generic, configurable voice path instead of a hard-coded assi
 - cue cache keys now auto-refresh from the running server build, so a rebuilt deployment regenerates snippets without a manual bump; `ELEVENLABS_CACHE_VERSION` and `ELEVENLABS_CUE_CACHE_VERSION` are optional overrides only
 
 The rollout plan for the full live assistant loop is in [docs/voice-roadmap.md](docs/voice-roadmap.md).
+
+## Experimental Live TV
+
+ClawTV now has a small MVP path for launching YouTube TV on a networked Android TV device over ADB.
+
+- configure `CLAWTV_ANDROID_TV_ADB_SERIAL` with the Shield's ADB serial or `host:port`
+- ensure ADB debugging is enabled on the Shield and the server host can reach it
+- map channel names to YouTube TV watch URLs with `CLAWTV_YOUTUBE_TV_CHANNEL_URLS_JSON`
+- run `clawtv live-tv --provider youtube-tv --channel cnn`
+
+The first cut is intentionally simple: the server launches the external app on the Shield and tunes the configured channel. It does not proxy the live stream through ClawTV or keep the receiver app in the foreground.
 
 ## Docs
 

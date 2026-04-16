@@ -13,6 +13,7 @@ export type VoiceReplyMode = "client-tts" | "server-audio" | "none";
 export type VoiceSttMode = "shield" | "server";
 export type VoiceBackendMode = "mock" | "openclaw";
 export type RecommendationStrategy = "default" | "random" | "highly-rated";
+export type LiveTvProvider = "youtube-tv";
 
 export interface SessionSummary {
   id: string;
@@ -131,6 +132,22 @@ export interface CommandResult {
   message: string;
   matchedItemCount: number;
   matchedItems: MediaItemSummary[];
+}
+
+export interface LiveTvTuneRequest {
+  provider: LiveTvProvider;
+  channel: string;
+}
+
+export interface LiveTvTuneResponse {
+  ok: boolean;
+  provider: LiveTvProvider;
+  channel: string;
+  message: string;
+  deviceSerial: string | null;
+  packageName: string | null;
+  launchedUrl: string | null;
+  clawTvPlaybackStopped: boolean;
 }
 
 export interface MediaLookupRequest {

@@ -14,6 +14,9 @@ import type {
   CheckNewContentResponse,
   ClientPlaybackState,
   CommandName,
+  LiveTvProvider,
+  LiveTvTuneRequest,
+  LiveTvTuneResponse,
   MediaItemSummary,
   PlaybackDiagnostics,
   PlaybackDiagnosticsUpdateRequest,
@@ -52,6 +55,9 @@ let syncInFlight: Promise<{
   syncRun: CheckNewContentResponse["syncRun"];
   items: MediaItemSummary[];
 }> | null = null;
+const defaultYouTubeTvChannels = {
+  cnn: "https://tv.youtube.com/watch/TJSwwtXbvLw"
+} as const;
 
 type VoiceDecision = {
   ok: boolean;
@@ -295,6 +301,32 @@ const server = createServer(async (request, response) => {
 
     sendJson(response, 200, await buildVoiceTurnResponse(body, voiceConfig));
     return;
+  }
+
+  if (request.method === "POST" && routePath === "/api/live-tv/tune") {
+    const body = (await readJsonBody(request)) as unknown as Partial<LiveTvTuneRequest>;
+
+    try {
+      const result = await tuneLiveTv({
+        provider: parseLiveTvProvider(body.provider),
+        channel: typeof body.channel === "string" ? body.channel : ""
+      });
+      sendJson(response, 200, result);
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to tune live TV.";
+      sendJson(response, 500, {
+        ok: false,
+        provider: parseLiveTvProvider(body.provider),
+        channel: typeof body.channel === "string" ? body.channel.trim().toLowerCase() : "",
+        message,
+        deviceSerial: process.env.CLAWTV_ANDROID_TV_ADB_SERIAL?.trim() || null,
+        packageName: null,
+        launchedUrl: null,
+        clawTvPlaybackStopped: false
+      } satisfies LiveTvTuneResponse);
+      return;
+    }
   }
 
   if (request.method === "POST" && routePath === "/api/playback/receiver-command/ack") {
@@ -959,6 +991,112 @@ function buildPlaybackSnapshot() {
     streamPath: snapshot.currentItem ? withBasePath(basePath, "/api/playback/hls/current.m3u8") : null,
     diagnostics: latestPlaybackDiagnostics
   };
+}
+
+function parseLiveTvProvider(value: unknown): LiveTvProvider {
+  return value === "youtube-tv" ? value : "youtube-tv";
+}
+
+function normalizeLiveTvChannelKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/gu, "-");
+}
+
+function resolveYouTubeTvChannelUrls(): Record<string, string> {
+  const raw = process.env.CLAWTV_YOUTUBE_TV_CHANNEL_URLS_JSON?.trim();
+
+  if (!raw) {
+    return { ...defaultYouTubeTvChannels };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const entries = Object.entries(parsed)
+      .flatMap(([channel, url]) => {
+        if (typeof url !== "string" || url.trim().length === 0) {
+          return [];
+        }
+
+        return [[normalizeLiveTvChannelKey(channel), url.trim()] as const];
+      });
+
+    return entries.length > 0
+      ? Object.fromEntries(entries)
+      : { ...defaultYouTubeTvChannels };
+  } catch {
+    throw new Error("CLAWTV_YOUTUBE_TV_CHANNEL_URLS_JSON is not valid JSON.");
+  }
+}
+
+async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse> {
+  if (!input.channel.trim()) {
+    throw new Error("A live TV channel name is required.");
+  }
+
+  const deviceSerial = process.env.CLAWTV_ANDROID_TV_ADB_SERIAL?.trim();
+  if (!deviceSerial) {
+    throw new Error("CLAWTV_ANDROID_TV_ADB_SERIAL is not configured on the server.");
+  }
+
+  const packageName = process.env.CLAWTV_YOUTUBE_TV_PACKAGE?.trim() || "com.google.android.youtube.tvunplugged";
+  const channelKey = normalizeLiveTvChannelKey(input.channel);
+  const channelUrls = resolveYouTubeTvChannelUrls();
+  const channelUrl = channelUrls[channelKey];
+
+  if (!channelUrl) {
+    throw new Error(`No ${input.provider} URL is configured for channel "${input.channel}".`);
+  }
+
+  const shouldConnect = parseBooleanEnv(process.env.CLAWTV_ANDROID_TV_ADB_CONNECT, true);
+  const adbPath = process.env.CLAWTV_ANDROID_TV_ADB_PATH?.trim() || "adb";
+  let clawTvPlaybackStopped = false;
+
+  if (buildPlaybackSnapshot().sessionId) {
+    const stopResult = db.applyCommand({
+      commandName: "stop",
+      payload: {},
+      source: "cli"
+    });
+    clawTvPlaybackStopped = stopResult.ok;
+  }
+
+  if (shouldConnect) {
+    await runAdbCommand(adbPath, ["connect", deviceSerial]);
+  }
+
+  await runAdbCommand(adbPath, [
+    "-s",
+    deviceSerial,
+    "shell",
+    "am",
+    "start",
+    "-a",
+    "android.intent.action.VIEW",
+    "-d",
+    channelUrl,
+    packageName
+  ]);
+
+  return {
+    ok: true,
+    provider: input.provider,
+    channel: channelKey,
+    message: `Opened ${input.provider} on ${channelKey}.`,
+    deviceSerial,
+    packageName,
+    launchedUrl: channelUrl,
+    clawTvPlaybackStopped
+  };
+}
+
+async function runAdbCommand(adbPath: string, args: string[]): Promise<void> {
+  try {
+    await execFileAsync(adbPath, args);
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : "ADB command failed.";
+    throw new Error(`${message} Command: ${adbPath} ${args.join(" ")}`);
+  }
 }
 
 async function buildVoiceConfig(): Promise<VoiceConfig> {
