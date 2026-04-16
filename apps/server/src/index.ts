@@ -2022,10 +2022,10 @@ function buildOpenClawPrompt(input: {
     ? describeRecommendationContextForPrompt(input.recommendation)
     : "No recommendation candidate list was provided for this turn.";
   const networkPrompt = input.networkContext
-    ? `This is a network/category turn for ${input.networkContext.network}. Local Plex network metadata says these shows are available: ${describeNetworkContextForPrompt(input.networkContext)}. If the user asks to watch, play, put on, or shuffle this network/category without naming a specific episode, use commandName shuffle with payload {"network":"${input.networkContext.network}"}. Do not invent a collection for this.`
+    ? `Possible network/category context: local Plex network metadata has ${input.networkContext.network} with these shows available: ${describeNetworkContextForPrompt(input.networkContext)}. Treat this as evidence, not a pre-decided intent. If your reasoning says the user really means this network/category and wants playback, use commandName shuffle with payload {"network":"${input.networkContext.network}"}. Do not invent a collection for this.`
     : "No local network/category candidate list was provided for this turn.";
   const recommendationPrompt = input.curatorIntent
-    ? `This is a recommendation turn for ${input.curatorIntent.show}. Use the supplied local watch data and rating data as the personalization layer. If helpful, use web search to compare reputable best-episode or ranking lists before you answer so you feel like a personalized metacritic instead of a library index. Unless the user explicitly asked to play, shuffle, or randomize, keep commandName as none and do not start playback. If you ask a follow-up question or are waiting for a preference, set expectsReply to true. Candidate episodes from the local library: ${recommendationContext}`
+    ? `Possible recommendation context for ${input.curatorIntent.show}: use the supplied local watch data and rating data as evidence only after deciding this is really the user's target. If helpful, use web search to compare reputable best-episode or ranking lists before you answer so you feel like a personalized metacritic instead of a library index. Unless the user explicitly asked to play, shuffle, or randomize, keep commandName as none and do not start playback. If you ask a follow-up question or are waiting for a preference, set expectsReply to true. Candidate episodes from the local library: ${recommendationContext}`
     : "If you ask a follow-up question or are waiting for a clarification, set expectsReply to true.";
 
   return [
@@ -2033,14 +2033,17 @@ function buildOpenClawPrompt(input: {
     "Return JSON only.",
     "Schema: {\"replyText\":\"string\",\"commandName\":\"none|play|play-latest|shuffle|pause|resume|next|stop\",\"payload\":{},\"expectsReply\":boolean}",
     "replyText should sound warm, direct, playful, and human. Keep it concise.",
+    "Reason first. The user's words may refer to a person, actor, host, network, title, topic, vague memory, or shorthand; do not assume ambiguous phrases are show titles.",
+    "If you have access to tools or skills, you may inspect the local ClawTV catalog, current playback, or web context before deciding. Choose tools because your reasoning needs them, not because of a fixed sequence.",
+    "If a local catalog lookup finds mentions of a person/topic in episodes but no clear show target, ask one short clarifying question and mention the plausible show names.",
     "If the user asks about what is currently on, remaining runtime, remaining episodes, or remaining seasons, use the supplied playback context only.",
-    "If the user asks to play a specific title, use commandName play and payload {\"title\":\"...\"}.",
-    "If the user asks to play some of a show, or to put on a show without naming a specific episode, it is okay to ask a recommendation follow-up question first instead of auto-playing.",
-    "If the user asks for the latest episode of a show, use commandName play-latest and payload {\"series\":\"...\"}.",
-    "If the user asks for a random episode of a show, use commandName shuffle and payload {\"show\":\"...\",\"limit\":1}.",
-    "If the user asks to shuffle a show, use commandName shuffle and payload {\"show\":\"...\"}.",
-    "If the user explicitly asks to play or shuffle highly rated or best episodes of a show, use commandName shuffle and payload {\"show\":\"...\",\"highlyRated\":true}.",
-    "If the user asks to shuffle a TV network or source, use commandName shuffle and payload {\"network\":\"...\"} only when local network context was supplied.",
+    "If the user asks to play a confirmed specific title, use commandName play and payload {\"title\":\"...\"}.",
+    "If the user asks to play some of a confirmed show, or to put on a confirmed show without naming a specific episode, it is okay to ask a recommendation follow-up question first instead of auto-playing.",
+    "If the user asks for the latest episode of a confirmed show/series, use commandName play-latest and payload {\"series\":\"...\"}.",
+    "If the user asks for a random episode of a confirmed show, use commandName shuffle and payload {\"show\":\"...\",\"limit\":1}.",
+    "If the user asks to shuffle a confirmed show, use commandName shuffle and payload {\"show\":\"...\"}.",
+    "If the user explicitly asks to play or shuffle highly rated or best episodes of a confirmed show, use commandName shuffle and payload {\"show\":\"...\",\"highlyRated\":true}.",
+    "If the user asks to shuffle a confirmed TV network or source, use commandName shuffle and payload {\"network\":\"...\"} only when local network evidence supports it.",
     "Use collection payloads only when a real local collection was supplied in context; never invent a collection from a network name.",
     "If the user asks for pause, resume, next, or stop, use that commandName with an empty payload object.",
     "If you are unsure what to play, set commandName to none and ask one short clarifying question.",
