@@ -75,6 +75,7 @@ class MainActivity : AppCompatActivity() {
     private var currentSnapshot: PlaybackSnapshotPayload? = null
     private var loadedStreamUrl: String? = null
     private var lastReportedState: String? = null
+    private var lastAutoAdvancedItemId: String? = null
     private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
     private var voicePromptPlayer: MediaPlayer? = null
@@ -186,13 +187,7 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         Player.STATE_ENDED -> {
-                            showOverlay(
-                                title = getString(R.string.status_finished_title),
-                                mode = OverlayMode.SPLASH,
-                                showCard = false,
-                                visible = true
-                            )
-                            reportPlaybackState("idle")
+                            advancePastEndedItem()
                         }
                     }
                 }
@@ -1071,8 +1066,32 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun advancePastEndedItem() {
+        val endedItemId = currentSnapshot?.itemId
+        if (endedItemId == null) {
+            reportPlaybackState("idle")
+            return
+        }
+
+        if (lastAutoAdvancedItemId == endedItemId) {
+            return
+        }
+
+        lastAutoAdvancedItemId = endedItemId
+        showOverlay(
+            title = getString(R.string.status_buffering_title),
+            mode = OverlayMode.PLAYBACK,
+            visible = true
+        )
+        sendCommand("next")
+    }
+
     private fun applySnapshot(snapshot: PlaybackSnapshotPayload) {
+        val previousItemId = currentSnapshot?.itemId
         currentSnapshot = snapshot
+        if (snapshot.itemId != previousItemId) {
+            lastAutoAdvancedItemId = null
+        }
 
         if (snapshot.receiverCommandId != null) {
             acknowledgeReceiverCommand(snapshot.receiverCommandId, snapshot.sessionId)
