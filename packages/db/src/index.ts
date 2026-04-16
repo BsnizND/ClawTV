@@ -1426,6 +1426,93 @@ export class ClawTvDatabase {
     const syncRunId = randomUUID();
     const startedAt = syncRun.startedAt ?? new Date().toISOString();
     const finishedAt = syncRun.finishedAt ?? new Date().toISOString();
+    const payloadMediaItemIds = new Set(payload.mediaItems.map((item) => item.id));
+    const referencedMediaItemIds = new Set<string>();
+
+    payload.mediaItems.forEach((item) => {
+      if (item.showId) {
+        referencedMediaItemIds.add(item.showId);
+      }
+      if (item.seasonId) {
+        referencedMediaItemIds.add(item.seasonId);
+      }
+    });
+
+    payload.tags.forEach((tag) => {
+      referencedMediaItemIds.add(tag.mediaItemId);
+    });
+
+    payload.collections.forEach((collection) => {
+      collection.mediaItemIds.forEach((mediaItemId) => {
+        referencedMediaItemIds.add(mediaItemId);
+      });
+    });
+
+    const existingMediaItemIds = this.lookupExistingMediaItemIds(
+      [...referencedMediaItemIds].filter((id) => !payloadMediaItemIds.has(id))
+    );
+    const knownMediaItemIds = new Set([
+      ...payloadMediaItemIds,
+      ...existingMediaItemIds
+    ]);
+    let missingSeasonShowRefs = 0;
+    let missingEpisodeShowRefs = 0;
+    let missingEpisodeSeasonRefs = 0;
+
+    const sanitizedMediaItems = payload.mediaItems.map((item) => {
+      if (item.mediaType === "season") {
+        const showId = item.showId && knownMediaItemIds.has(item.showId)
+          ? item.showId
+          : null;
+
+        if (item.showId && !showId) {
+          missingSeasonShowRefs += 1;
+        }
+
+        return {
+          ...item,
+          showId
+        };
+      }
+
+      if (item.mediaType === "episode") {
+        const showId = item.showId && knownMediaItemIds.has(item.showId)
+          ? item.showId
+          : null;
+        const seasonId = item.seasonId && knownMediaItemIds.has(item.seasonId)
+          ? item.seasonId
+          : null;
+
+        if (item.showId && !showId) {
+          missingEpisodeShowRefs += 1;
+        }
+
+        if (item.seasonId && !seasonId) {
+          missingEpisodeSeasonRefs += 1;
+        }
+
+        return {
+          ...item,
+          showId,
+          seasonId
+        };
+      }
+
+      return item;
+    });
+
+    const filteredTags = payload.tags.filter((tag) => knownMediaItemIds.has(tag.mediaItemId));
+    const skippedTagRefs = payload.tags.length - filteredTags.length;
+    let skippedCollectionItemRefs = 0;
+    const filteredCollections = payload.collections.map((collection) => {
+      const mediaItemIds = collection.mediaItemIds.filter((mediaItemId) => knownMediaItemIds.has(mediaItemId));
+      skippedCollectionItemRefs += collection.mediaItemIds.length - mediaItemIds.length;
+
+      return {
+        ...collection,
+        mediaItemIds
+      };
+    });
 
     this.db.exec("BEGIN");
 
@@ -1465,9 +1552,16 @@ export class ClawTvDatabase {
         errorMessage: syncRun.errorMessage ?? null,
         detailsJson: JSON.stringify({
           libraries: payload.libraries.length,
-          mediaItems: payload.mediaItems.length,
-          collections: payload.collections.length,
-          tags: payload.tags.length
+          mediaItems: sanitizedMediaItems.length,
+          collections: filteredCollections.length,
+          tags: filteredTags.length,
+          skippedRefs: {
+            seasonShow: missingSeasonShowRefs,
+            episodeShow: missingEpisodeShowRefs,
+            episodeSeason: missingEpisodeSeasonRefs,
+            tags: skippedTagRefs,
+            collectionItems: skippedCollectionItemRefs
+          }
         })
       });
 
@@ -1607,7 +1701,7 @@ export class ClawTvDatabase {
         updatedAt: library.updatedAt
       }));
 
-      payload.mediaItems.forEach((item) => {
+      sanitizedMediaItems.forEach((item) => {
         upsertMediaItem.run({
           id: item.id,
           plexRatingKey: item.plexRatingKey,
@@ -1632,13 +1726,13 @@ export class ClawTvDatabase {
         });
       });
 
-      payload.mediaItems.forEach((item) => {
+      sanitizedMediaItems.forEach((item) => {
         if (item.mediaType === "show") {
           upsertShow.run({ mediaItemId: item.id });
         }
       });
 
-      payload.mediaItems.forEach((item) => {
+      sanitizedMediaItems.forEach((item) => {
         if (item.mediaType === "season") {
           upsertSeason.run({
             mediaItemId: item.id,
@@ -1648,7 +1742,7 @@ export class ClawTvDatabase {
         }
       });
 
-      payload.mediaItems.forEach((item) => {
+      sanitizedMediaItems.forEach((item) => {
         if (item.mediaType === "episode") {
           upsertEpisode.run({
             mediaItemId: item.id,
@@ -1660,7 +1754,7 @@ export class ClawTvDatabase {
         }
       });
 
-      payload.mediaItems.forEach((item) => {
+      sanitizedMediaItems.forEach((item) => {
         if (item.mediaType === "movie") {
           upsertMovie.run({ mediaItemId: item.id });
         }
@@ -1672,7 +1766,7 @@ export class ClawTvDatabase {
           WHERE tag_type = 'network'
         `).run();
       } else {
-        new Set(payload.mediaItems
+        new Set(sanitizedMediaItems
           .filter((item) => item.mediaType === "show")
           .map((item) => item.id)
         ).forEach((mediaItemId) => {
@@ -1680,7 +1774,7 @@ export class ClawTvDatabase {
         });
       }
 
-      payload.tags.forEach((tag) => {
+      filteredTags.forEach((tag) => {
         upsertMediaItemTag.run({
           mediaItemId: tag.mediaItemId,
           tagType: tag.tagType,
@@ -1689,7 +1783,7 @@ export class ClawTvDatabase {
         });
       });
 
-      payload.collections.forEach((collection) => {
+      filteredCollections.forEach((collection) => {
         upsertCollection.run({
           id: collection.id,
           plexCollectionKey: collection.plexCollectionKey,
@@ -1938,6 +2032,28 @@ export class ClawTvDatabase {
       WHERE s.active = 1
       LIMIT 1
     `).get() as unknown as SessionRow | undefined;
+  }
+
+  private lookupExistingMediaItemIds(ids: string[]): Set<string> {
+    const existingIds = new Set<string>();
+
+    if (ids.length === 0) {
+      return existingIds;
+    }
+
+    for (let index = 0; index < ids.length; index += 500) {
+      const chunk = ids.slice(index, index + 500);
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.db.prepare(`
+        SELECT id
+        FROM media_items
+        WHERE id IN (${placeholders})
+      `).all(...chunk) as unknown as Array<{ id: string }>;
+
+      rows.forEach((row) => existingIds.add(row.id));
+    }
+
+    return existingIds;
   }
 
   private getTargetSession(sessionId?: string | null): SessionRow | undefined {
