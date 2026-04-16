@@ -9,6 +9,8 @@ import type {
   CatalogMediaTypeFilter,
   CatalogMovieListResponse,
   CatalogMovieSummary,
+  CatalogNetworkListResponse,
+  CatalogNetworkShowsResponse,
   CatalogRecommendationResponse,
   CatalogRecentResponse,
   CatalogSearchResponse,
@@ -80,10 +82,18 @@ export interface CatalogCollectionRecord {
   mediaItemIds: string[];
 }
 
+export interface CatalogMediaItemTagRecord {
+  mediaItemId: string;
+  tagType: "network";
+  tagKey: string | null;
+  tag: string;
+}
+
 export interface CatalogSyncPayload {
   libraries: CatalogLibraryRecord[];
   mediaItems: CatalogMediaItemRecord[];
   collections: CatalogCollectionRecord[];
+  tags: CatalogMediaItemTagRecord[];
 }
 
 export interface ApplyCommandInput {
@@ -209,6 +219,16 @@ interface CollectionSummaryRow {
   item_count: number;
 }
 
+interface NetworkSummaryRow {
+  network: string;
+  show_count: number;
+  episode_count: number;
+}
+
+interface NetworkShowSummaryRow extends ShowSummaryRow {
+  networks: string | null;
+}
+
 interface MovieSummaryRow {
   id: string;
   title: string;
@@ -218,6 +238,31 @@ interface MovieSummaryRow {
 interface ResolvedShowRow {
   id: string;
   title: string;
+}
+
+export interface VoiceTurnLogInput {
+  sessionId: string | null;
+  transcript: string;
+  rawReplyText: string | null;
+  rawCommandName: string | null;
+  rawPayload: Record<string, unknown> | null;
+  rawExpectsReply: boolean | null;
+  finalReplyText: string;
+  finalCommandName: string;
+  finalPayload: Record<string, unknown>;
+  commandOk: boolean | null;
+  commandMessage: string | null;
+  matchedItemCount: number | null;
+}
+
+export interface CatalogNetworkContext {
+  network: string;
+  shows: Array<{
+    id: string;
+    title: string;
+    episodeCount: number;
+    latestAirDate: string | null;
+  }>;
 }
 
 export function createDatabasePaths(rootDir: string, dataDir?: string): DatabasePaths {
@@ -719,6 +764,104 @@ export class ClawTvDatabase {
 
     return {
       collections: rows.map((row) => mapCollectionSummaryRow(row))
+    };
+  }
+
+  listNetworks(limit?: number): CatalogNetworkListResponse {
+    const rows = this.db.prepare(`
+      SELECT
+        mit.tag AS network,
+        COUNT(DISTINCT s.media_item_id) AS show_count,
+        COUNT(e.media_item_id) AS episode_count
+      FROM media_item_tags mit
+      JOIN shows s ON s.media_item_id = mit.media_item_id
+      LEFT JOIN episodes e ON e.show_id = s.media_item_id
+      WHERE mit.tag_type = 'network'
+      GROUP BY mit.tag
+      ORDER BY mit.tag ASC
+      LIMIT :limit
+    `).all({
+      limit: clampCatalogLimit(limit)
+    }) as unknown as NetworkSummaryRow[];
+
+    return {
+      networks: rows.map((row) => ({
+        network: row.network,
+        showCount: row.show_count,
+        episodeCount: row.episode_count
+      }))
+    };
+  }
+
+  listNetworkShows(network: string, limit?: number): CatalogNetworkShowsResponse {
+    const resolvedNetwork = this.resolveNetworkName(network) ?? network.trim();
+    const rows = this.db.prepare(`
+      SELECT
+        show_mi.id,
+        show_mi.title,
+        COUNT(e.media_item_id) AS episode_count,
+        MAX(COALESCE(e.air_date, episode_mi.originally_available_at)) AS latest_air_date,
+        GROUP_CONCAT(DISTINCT network_tags.tag) AS networks
+      FROM media_item_tags target_network
+      JOIN shows s ON s.media_item_id = target_network.media_item_id
+      JOIN media_items show_mi ON show_mi.id = s.media_item_id
+      LEFT JOIN media_item_tags network_tags
+        ON network_tags.media_item_id = s.media_item_id
+       AND network_tags.tag_type = 'network'
+      LEFT JOIN episodes e ON e.show_id = s.media_item_id
+      LEFT JOIN media_items episode_mi ON episode_mi.id = e.media_item_id
+      WHERE target_network.tag_type = 'network'
+        AND lower(target_network.tag) = lower(:network)
+      GROUP BY show_mi.id, show_mi.title
+      ORDER BY show_mi.title ASC
+      LIMIT :limit
+    `).all({
+      network: resolvedNetwork,
+      limit: clampCatalogLimit(limit)
+    }) as unknown as NetworkShowSummaryRow[];
+
+    return {
+      network: resolvedNetwork,
+      shows: rows.map((row) => ({
+        ...mapShowSummaryRow(row),
+        networks: row.networks?.split(",").filter(Boolean) ?? []
+      }))
+    };
+  }
+
+  findNetworkContextForTranscript(transcript: string): CatalogNetworkContext | null {
+    const normalizedTranscript = normalizeSearchText(transcript);
+
+    if (!normalizedTranscript) {
+      return null;
+    }
+
+    const rows = this.db.prepare(`
+      SELECT DISTINCT tag
+      FROM media_item_tags
+      WHERE tag_type = 'network'
+      ORDER BY LENGTH(tag) DESC, tag ASC
+    `).all() as unknown as Array<{ tag: string }>;
+    const match = rows.find((row) => normalizedTranscript.includes(normalizeSearchText(row.tag)));
+
+    if (!match) {
+      return null;
+    }
+
+    const networkShows = this.listNetworkShows(match.tag, 8).shows;
+
+    if (networkShows.length === 0) {
+      return null;
+    }
+
+    return {
+      network: match.tag,
+      shows: networkShows.map((show) => ({
+        id: show.id,
+        title: show.title,
+        episodeCount: show.episodeCount,
+        latestAirDate: show.latestAirDate
+      }))
     };
   }
 
@@ -1322,7 +1465,8 @@ export class ClawTvDatabase {
         detailsJson: JSON.stringify({
           libraries: payload.libraries.length,
           mediaItems: payload.mediaItems.length,
-          collections: payload.collections.length
+          collections: payload.collections.length,
+          tags: payload.tags.length
         })
       });
 
@@ -1426,6 +1570,17 @@ export class ClawTvDatabase {
         VALUES (:mediaItemId)
         ON CONFLICT(media_item_id) DO NOTHING
       `);
+      const deleteNetworkTags = this.db.prepare(`
+        DELETE FROM media_item_tags
+        WHERE tag_type = 'network'
+          AND media_item_id = :mediaItemId
+      `);
+      const upsertMediaItemTag = this.db.prepare(`
+        INSERT INTO media_item_tags (media_item_id, tag_type, tag_key, tag)
+        VALUES (:mediaItemId, :tagType, :tagKey, :tag)
+        ON CONFLICT(media_item_id, tag_type, tag) DO UPDATE SET
+          tag_key = excluded.tag_key
+      `);
       const upsertCollection = this.db.prepare(`
         INSERT INTO collections (id, plex_collection_key, library_id, title, updated_at)
         VALUES (:id, :plexCollectionKey, :libraryId, :title, :updatedAt)
@@ -1474,11 +1629,15 @@ export class ClawTvDatabase {
           audienceRating: item.audienceRating,
           criticRating: item.criticRating
         });
+      });
 
+      payload.mediaItems.forEach((item) => {
         if (item.mediaType === "show") {
           upsertShow.run({ mediaItemId: item.id });
         }
+      });
 
+      payload.mediaItems.forEach((item) => {
         if (item.mediaType === "season") {
           upsertSeason.run({
             mediaItemId: item.id,
@@ -1486,7 +1645,9 @@ export class ClawTvDatabase {
             seasonNumber: item.seasonNumber
           });
         }
+      });
 
+      payload.mediaItems.forEach((item) => {
         if (item.mediaType === "episode") {
           upsertEpisode.run({
             mediaItemId: item.id,
@@ -1496,10 +1657,35 @@ export class ClawTvDatabase {
             airDate: item.airDate
           });
         }
+      });
 
+      payload.mediaItems.forEach((item) => {
         if (item.mediaType === "movie") {
           upsertMovie.run({ mediaItemId: item.id });
         }
+      });
+
+      if (syncRun.mode === "full-sync") {
+        this.db.prepare(`
+          DELETE FROM media_item_tags
+          WHERE tag_type = 'network'
+        `).run();
+      } else {
+        new Set(payload.mediaItems
+          .filter((item) => item.mediaType === "show")
+          .map((item) => item.id)
+        ).forEach((mediaItemId) => {
+          deleteNetworkTags.run({ mediaItemId });
+        });
+      }
+
+      payload.tags.forEach((tag) => {
+        upsertMediaItemTag.run({
+          mediaItemId: tag.mediaItemId,
+          tagType: tag.tagType,
+          tagKey: tag.tagKey,
+          tag: tag.tag
+        });
       });
 
       payload.collections.forEach((collection) => {
@@ -1569,6 +1755,57 @@ export class ClawTvDatabase {
     });
 
     return this.getLatestSyncRun()!;
+  }
+
+  recordVoiceTurn(input: VoiceTurnLogInput): void {
+    this.db.prepare(`
+      INSERT INTO voice_turn_log (
+        id,
+        session_id,
+        transcript,
+        raw_reply_text,
+        raw_command_name,
+        raw_payload_json,
+        raw_expects_reply,
+        final_reply_text,
+        final_command_name,
+        final_payload_json,
+        command_ok,
+        command_message,
+        matched_item_count,
+        created_at
+      ) VALUES (
+        :id,
+        :sessionId,
+        :transcript,
+        :rawReplyText,
+        :rawCommandName,
+        :rawPayloadJson,
+        :rawExpectsReply,
+        :finalReplyText,
+        :finalCommandName,
+        :finalPayloadJson,
+        :commandOk,
+        :commandMessage,
+        :matchedItemCount,
+        :createdAt
+      )
+    `).run({
+      id: randomUUID(),
+      sessionId: input.sessionId,
+      transcript: input.transcript,
+      rawReplyText: input.rawReplyText,
+      rawCommandName: input.rawCommandName,
+      rawPayloadJson: input.rawPayload ? JSON.stringify(input.rawPayload) : null,
+      rawExpectsReply: typeof input.rawExpectsReply === "boolean" ? (input.rawExpectsReply ? 1 : 0) : null,
+      finalReplyText: input.finalReplyText,
+      finalCommandName: input.finalCommandName,
+      finalPayloadJson: JSON.stringify(input.finalPayload),
+      commandOk: typeof input.commandOk === "boolean" ? (input.commandOk ? 1 : 0) : null,
+      commandMessage: input.commandMessage,
+      matchedItemCount: input.matchedItemCount,
+      createdAt: new Date().toISOString()
+    });
   }
 
   private runMigrations(): void {
@@ -1952,6 +2189,7 @@ export class ClawTvDatabase {
     if (commandName === "shuffle") {
       const show = String(payload.show ?? "").trim();
       const collection = String(payload.collection ?? "").trim();
+      const network = String(payload.network ?? "").trim();
       const highlyRated = parseBooleanPayload(payload.highlyRated);
       const unwatchedOnly = parseBooleanPayload(payload.unwatchedOnly);
       const limit = clampShuffleLimit(parseFiniteNumber(payload.limit) ?? null);
@@ -1997,6 +2235,16 @@ export class ClawTvDatabase {
         return curatedMatches.map(mapMediaRow);
       }
 
+      if (network) {
+        return this.resolveNetworkShuffleItems({
+          network,
+          limit,
+          highlyRated,
+          unwatchedOnly,
+          recentCutoff
+        });
+      }
+
       if (collection) {
         const matches = this.db.prepare(`
           SELECT
@@ -2020,11 +2268,108 @@ export class ClawTvDatabase {
           collectionPattern: `%${collection}%`
         }) as unknown as MediaRow[];
 
-        return matches.map(mapMediaRow);
+        if (matches.length > 0) {
+          return matches.map(mapMediaRow);
+        }
+
+        return this.resolveNetworkShuffleItems({
+          network: collection,
+          limit,
+          highlyRated,
+          unwatchedOnly,
+          recentCutoff
+        });
       }
     }
 
     return [];
+  }
+
+  private resolveNetworkName(input: string): string | null {
+    const network = input.trim();
+
+    if (!network) {
+      return null;
+    }
+
+    const exact = this.db.prepare(`
+      SELECT tag
+      FROM media_item_tags
+      WHERE tag_type = 'network'
+        AND lower(tag) = lower(:network)
+      LIMIT 1
+    `).get({ network }) as { tag: string } | undefined;
+
+    if (exact) {
+      return exact.tag;
+    }
+
+    const fuzzy = this.db.prepare(`
+      SELECT tag
+      FROM media_item_tags
+      WHERE tag_type = 'network'
+        AND lower(tag) LIKE lower(:networkPattern)
+      ORDER BY LENGTH(tag) ASC
+      LIMIT 1
+    `).get({ networkPattern: `%${network}%` }) as { tag: string } | undefined;
+
+    return fuzzy?.tag ?? null;
+  }
+
+  private resolveNetworkShuffleItems(input: {
+    network: string;
+    limit: number;
+    highlyRated: boolean;
+    unwatchedOnly: boolean;
+    recentCutoff: string;
+  }): MediaItemSummary[] {
+    const network = this.resolveNetworkName(input.network);
+
+    if (!network) {
+      return [];
+    }
+
+    const matches = this.db.prepare(`
+      SELECT
+        episode_mi.id,
+        episode_mi.title,
+        episode_mi.media_type,
+        show_mi.title AS show_title,
+        episode_mi.year,
+        episode_mi.originally_available_at,
+        episode_mi.view_count,
+        episode_mi.last_viewed_at,
+        episode_mi.view_offset_ms,
+        episode_mi.user_rating,
+        episode_mi.audience_rating,
+        episode_mi.critic_rating,
+        season.season_number,
+        e.episode_number
+      FROM media_item_tags network_tag
+      JOIN shows s ON s.media_item_id = network_tag.media_item_id
+      JOIN episodes e ON e.show_id = s.media_item_id
+      JOIN media_items episode_mi ON episode_mi.id = e.media_item_id
+      JOIN media_items show_mi ON show_mi.id = e.show_id
+      LEFT JOIN seasons season ON season.media_item_id = e.season_id
+      WHERE network_tag.tag_type = 'network'
+        AND lower(network_tag.tag) = lower(:network)
+        AND (:unwatchedOnly = 0 OR COALESCE(episode_mi.view_count, 0) = 0)
+      ORDER BY RANDOM()
+      LIMIT :limit
+    `).all({
+      network,
+      unwatchedOnly: input.unwatchedOnly ? 1 : 0,
+      limit: input.limit
+    }) as unknown as MediaRow[];
+
+    const curatedMatches = matches
+      .sort((left, right) => compareShuffleRows(left, right, {
+        highlyRated: input.highlyRated,
+        recentCutoff: input.recentCutoff
+      }))
+      .slice(0, input.limit);
+
+    return curatedMatches.map(mapMediaRow);
   }
 
   private expandPlayableMatches(items: MediaItemSummary[]): MediaItemSummary[] {
@@ -2413,6 +2758,15 @@ function normalizeStartsWithFilter(value: string | null | undefined): string | n
   }
 
   return /^[A-Z]$/u.test(trimmed) ? trimmed : null;
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9+]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function calculateDurationMs(startedAt: string, finishedAt: string | null): number | null {

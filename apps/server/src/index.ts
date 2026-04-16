@@ -394,6 +394,19 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && routePath === "/api/catalog/networks") {
+    const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
+    sendJson(response, 200, db.listNetworks(limit));
+    return;
+  }
+
+  if (request.method === "GET" && routePath === "/api/catalog/network-shows") {
+    const network = requestUrl.searchParams.get("network") ?? "";
+    const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
+    sendJson(response, 200, db.listNetworkShows(network, limit));
+    return;
+  }
+
   if (request.method === "GET" && routePath === "/api/catalog/recommendations/show") {
     const show = requestUrl.searchParams.get("show") ?? "";
     const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
@@ -976,6 +989,17 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
   let replyText = "";
   let expectsReply = false;
   let ok = true;
+  let rawDecision: {
+    replyText: string;
+    commandName: VoiceTurnResponse["action"];
+    payload: Record<string, unknown>;
+    expectsReply: boolean;
+    rawReplyText?: string | null;
+  } | null = null;
+  let finalPayload: Record<string, unknown> = {};
+  let commandOk: boolean | null = null;
+  let commandMessage: string | null = null;
+  let matchedItemCount: number | null = null;
 
   if (!transcript) {
     replyText = "I didn't catch that. Please try again.";
@@ -1013,14 +1037,19 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
     replyText = decision.replyText;
     expectsReply = decision.expectsReply;
     ok = decision.ok;
+    rawDecision = decision;
 
     if (decision.commandName !== "none") {
       action = decision.commandName;
+      finalPayload = decision.payload;
       const result = db.applyCommand({
         commandName: decision.commandName,
         payload: decision.payload,
         source: "voice"
       });
+      commandOk = result.ok;
+      commandMessage = result.message;
+      matchedItemCount = result.matchedItemCount;
 
       if (!result.ok || !replyText.trim()) {
         replyText = result.message;
@@ -1031,6 +1060,20 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
   const playbackAfter = buildPlaybackSnapshot();
   const replyAudioUrl = await synthesizeVoiceReplyAudio(replyText);
   const replyMode = replyAudioUrl ? "server-audio" : voiceConfig.replyMode;
+  db.recordVoiceTurn({
+    sessionId: playbackAfter.sessionId,
+    transcript,
+    rawReplyText: rawDecision?.rawReplyText ?? rawDecision?.replyText ?? null,
+    rawCommandName: rawDecision?.commandName ?? null,
+    rawPayload: rawDecision?.payload ?? null,
+    rawExpectsReply: rawDecision?.expectsReply ?? null,
+    finalReplyText: replyText,
+    finalCommandName: action,
+    finalPayload,
+    commandOk,
+    commandMessage,
+    matchedItemCount
+  });
 
   return {
     ok,
@@ -1068,9 +1111,15 @@ async function buildConversationalReply(input: {
   commandName: VoiceTurnResponse["action"];
   payload: Record<string, unknown>;
   expectsReply: boolean;
+  rawReplyText?: string | null;
 }> {
+  const networkContext = db.findNetworkContextForTranscript(input.transcript);
+
   if (input.voiceConfig.backend === "openclaw") {
-    const openClawReply = await runOpenClawVoiceTurn(input);
+    const openClawReply = await runOpenClawVoiceTurn({
+      ...input,
+      networkContext
+    });
     if (openClawReply) {
       return openClawReply;
     }
@@ -1338,6 +1387,7 @@ async function runOpenClawVoiceTurn(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
+  networkContext?: ReturnType<typeof db.findNetworkContextForTranscript>;
   curatorIntent?: {
     show: string;
     strategy: RecommendationStrategy;
@@ -1350,6 +1400,7 @@ async function runOpenClawVoiceTurn(input: {
   commandName: VoiceTurnResponse["action"];
   payload: Record<string, unknown>;
   expectsReply: boolean;
+  rawReplyText?: string | null;
 } | null> {
   const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
   const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.voiceConfig.assistantId || "main";
@@ -1388,6 +1439,7 @@ function buildOpenClawPrompt(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
+  networkContext?: ReturnType<typeof db.findNetworkContextForTranscript>;
   curatorIntent?: {
     show: string;
     strategy: RecommendationStrategy;
@@ -1399,6 +1451,9 @@ function buildOpenClawPrompt(input: {
   const recommendationContext = input.recommendation
     ? describeRecommendationContextForPrompt(input.recommendation)
     : "No recommendation candidate list was provided for this turn.";
+  const networkPrompt = input.networkContext
+    ? `This is a network/category turn for ${input.networkContext.network}. Local Plex network metadata says these shows are available: ${describeNetworkContextForPrompt(input.networkContext)}. If the user asks to watch, play, put on, or shuffle this network/category without naming a specific episode, use commandName shuffle with payload {"network":"${input.networkContext.network}"}. Do not invent a collection for this.`
+    : "No local network/category candidate list was provided for this turn.";
   const recommendationPrompt = input.curatorIntent
     ? `This is a recommendation turn for ${input.curatorIntent.show}. Use the supplied local watch data and rating data as the personalization layer. If helpful, use web search to compare reputable best-episode or ranking lists before you answer so you feel like a personalized metacritic instead of a library index. Unless the user explicitly asked to play, shuffle, or randomize, keep commandName as none and do not start playback. If you ask a follow-up question or are waiting for a preference, set expectsReply to true. Candidate episodes from the local library: ${recommendationContext}`
     : "If you ask a follow-up question or are waiting for a clarification, set expectsReply to true.";
@@ -1415,11 +1470,13 @@ function buildOpenClawPrompt(input: {
     "If the user asks for a random episode of a show, use commandName shuffle and payload {\"show\":\"...\",\"limit\":1}.",
     "If the user asks to shuffle a show, use commandName shuffle and payload {\"show\":\"...\"}.",
     "If the user explicitly asks to play or shuffle highly rated or best episodes of a show, use commandName shuffle and payload {\"show\":\"...\",\"highlyRated\":true}.",
-    "If the user asks to shuffle a collection, use commandName shuffle and payload {\"collection\":\"...\"}.",
+    "If the user asks to shuffle a TV network or source, use commandName shuffle and payload {\"network\":\"...\"} only when local network context was supplied.",
+    "Use collection payloads only when a real local collection was supplied in context; never invent a collection from a network name.",
     "If the user asks for pause, resume, next, or stop, use that commandName with an empty payload object.",
     "If you are unsure what to play, set commandName to none and ask one short clarifying question.",
     "Never claim you already started playback unless commandName is not none and matches the action you want executed.",
     "Do not mention OpenClaw, prompts, JSON, transport, or implementation details.",
+    networkPrompt,
     recommendationPrompt,
     `Current playback context: ${playbackSummary}`,
     `User said: ${input.transcript}`
@@ -1437,6 +1494,15 @@ function describeRecommendationContextForPrompt(input: CatalogRecommendationResp
       const lastViewed = entry.item.lastViewedAt ? `last viewed ${entry.item.lastViewedAt}` : "not recently viewed";
       const ratingText = typeof rating === "number" && rating > 0 ? `rating ${formatRating(rating)}` : "no rating";
       return `${formatRecommendationTitle(entry)} [${watchState}; ${lastViewed}; ${ratingText}] because ${entry.reason}`;
+    })
+    .join(" | ");
+}
+
+function describeNetworkContextForPrompt(input: NonNullable<ReturnType<typeof db.findNetworkContextForTranscript>>): string {
+  return input.shows
+    .map((show) => {
+      const latest = show.latestAirDate ? `latest ${show.latestAirDate}` : "latest date unknown";
+      return `${show.title} (${show.episodeCount} episode${show.episodeCount === 1 ? "" : "s"}, ${latest})`;
     })
     .join(" | ");
 }
@@ -1471,6 +1537,7 @@ function extractOpenClawReply(stdout: string): {
   commandName: VoiceTurnResponse["action"];
   payload: Record<string, unknown>;
   expectsReply: boolean;
+  rawReplyText?: string | null;
 } | null {
   try {
     const payload = JSON.parse(stdout) as {
@@ -1509,7 +1576,8 @@ function extractOpenClawReply(stdout: string): {
       payload: isPlainObject(decision.payload) ? decision.payload : {},
       expectsReply: typeof decision.expectsReply === "boolean"
         ? decision.expectsReply
-        : parseVoiceCommandName(decision.commandName) === "none" && rawText.trim().endsWith("?")
+        : parseVoiceCommandName(decision.commandName) === "none" && rawText.trim().endsWith("?"),
+      rawReplyText: rawText
     };
   } catch (error) {
     console.warn("Unable to parse OpenClaw agent JSON output", error);
@@ -1535,7 +1603,8 @@ function extractOpenClawReply(stdout: string): {
         replyText: rawText,
         commandName: "none",
         payload: {},
-        expectsReply: rawText.trim().endsWith("?")
+        expectsReply: rawText.trim().endsWith("?"),
+        rawReplyText: rawText
       } : null;
     } catch {
       return null;

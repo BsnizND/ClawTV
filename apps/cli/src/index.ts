@@ -3,6 +3,8 @@ import type {
   CatalogCollectionListResponse,
   CatalogMediaTypeFilter,
   CatalogRecommendationResponse,
+  CatalogNetworkListResponse,
+  CatalogNetworkShowsResponse,
   CatalogRecentResponse,
   CatalogSearchResponse,
   CatalogShowListResponse,
@@ -127,6 +129,29 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (rawCommand === "list-networks") {
+      const payload = parseCatalogFlags(restArgs);
+      const result = await getJson<CatalogNetworkListResponse>(withSearchParams("api/catalog/networks", {
+        limit: payload.limit
+      }));
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (rawCommand === "list-network-shows") {
+      const flags = parseKeyValueFlags(restArgs);
+      if (!flags.network) {
+        throw new Error("list-network-shows requires --network \"...\"");
+      }
+
+      const result = await getJson<CatalogNetworkShowsResponse>(withSearchParams("api/catalog/network-shows", {
+        network: flags.network,
+        limit: flags.limit
+      }));
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (rawCommand === "recently-added") {
       const payload = parseCatalogFlags(restArgs);
       const result = await getJson<CatalogRecentResponse>(withSearchParams("api/catalog/recently-added", {
@@ -199,6 +224,8 @@ Usage:
   clawtv search --query "john oliver" [--type episode]
   clawtv list-shows [--limit 20]
   clawtv list-collections [--limit 20]
+  clawtv list-networks [--limit 20]
+  clawtv list-network-shows --network "HGTV" [--limit 20]
   clawtv recently-added [--type movie] [--limit 10]
   clawtv recommend-show --show "Seinfeld" [--strategy default|random|highly-rated] [--limit 3]
   clawtv sync-status
@@ -207,6 +234,7 @@ Usage:
   clawtv play --title "The Matrix"
   clawtv play-latest --series "The Late Show with Stephen Colbert"
   clawtv shuffle --show "Bluey"
+  clawtv shuffle --network "HGTV"
   clawtv shuffle --collection "HGTV"
   clawtv pause
   clawtv resume

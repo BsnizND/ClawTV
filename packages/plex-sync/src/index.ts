@@ -2,6 +2,7 @@ import type { SyncMode } from "@clawtv/contracts";
 import type {
   CatalogCollectionRecord,
   CatalogLibraryRecord,
+  CatalogMediaItemTagRecord,
   CatalogMediaItemRecord,
   CatalogSyncPayload
 } from "@clawtv/db";
@@ -34,6 +35,7 @@ export async function syncPlexCatalog(options: PlexSyncOptions): Promise<Catalog
   const libraries: CatalogLibraryRecord[] = [];
   const mediaItemsById = new Map<string, CatalogMediaItemRecord>();
   const collectionsById = new Map<string, CatalogCollectionRecord>();
+  const tagsByKey = new Map<string, CatalogMediaItemTagRecord>();
 
   for (const section of sections) {
     const libraryId = `plex-library-${section.key}`;
@@ -69,12 +71,26 @@ export async function syncPlexCatalog(options: PlexSyncOptions): Promise<Catalog
         collectionsById.set(mapped.id, mapped);
       }
     });
+
+    if (section.type === "show") {
+      const networkTags = await fetchShowNetworkTags({
+        options,
+        section
+      });
+
+      networkTags.forEach((tag) => {
+        if (mediaItemsById.has(tag.mediaItemId)) {
+          tagsByKey.set(`${tag.mediaItemId}|${tag.tagType}|${tag.tag}`, tag);
+        }
+      });
+    }
   }
 
   return {
     libraries,
     mediaItems: [...mediaItemsById.values()],
-    collections: [...collectionsById.values()]
+    collections: [...collectionsById.values()],
+    tags: [...tagsByKey.values()]
   };
 }
 
@@ -297,6 +313,50 @@ async function fetchIncrementalSectionItems(input: {
   }
 
   return sectionItems;
+}
+
+async function fetchShowNetworkTags(input: {
+  options: PlexSyncOptions;
+  section: PlexSection;
+}): Promise<CatalogMediaItemTagRecord[]> {
+  const networksResponse = await plexFetch<PlexMediaContainerResponse>(
+    input.options,
+    `library/sections/${input.section.key}/network`
+  );
+  const rawNetworks = networksResponse.MediaContainer?.Directory ?? [];
+  const tags: CatalogMediaItemTagRecord[] = [];
+
+  for (const rawNetwork of rawNetworks) {
+    const network = asString(rawNetwork.title) ?? asString(rawNetwork.tag);
+    const networkKey = asString(rawNetwork.key);
+
+    if (!network) {
+      continue;
+    }
+
+    const showsResponse = await plexFetch<PlexMediaContainerResponse>(
+      input.options,
+      `library/sections/${input.section.key}/all?network=${encodeURIComponent(network)}`
+    );
+    const rawShows = showsResponse.MediaContainer?.Metadata ?? [];
+
+    rawShows.forEach((rawShow) => {
+      const mediaItemId = buildMediaItemId(asString(rawShow.ratingKey));
+
+      if (!mediaItemId) {
+        return;
+      }
+
+      tags.push({
+        mediaItemId,
+        tagType: "network",
+        tagKey: networkKey,
+        tag: network
+      });
+    });
+  }
+
+  return tags;
 }
 
 async function fetchMetadataItem(

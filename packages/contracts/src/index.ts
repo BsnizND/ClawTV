@@ -152,6 +152,10 @@ export interface CatalogShowSummary {
   latestAirDate: string | null;
 }
 
+export interface CatalogNetworkShowSummary extends CatalogShowSummary {
+  networks: string[];
+}
+
 export interface CatalogShowListResponse {
   shows: CatalogShowSummary[];
 }
@@ -174,6 +178,21 @@ export interface CatalogCollectionSummary {
 
 export interface CatalogCollectionListResponse {
   collections: CatalogCollectionSummary[];
+}
+
+export interface CatalogNetworkSummary {
+  network: string;
+  showCount: number;
+  episodeCount: number;
+}
+
+export interface CatalogNetworkListResponse {
+  networks: CatalogNetworkSummary[];
+}
+
+export interface CatalogNetworkShowsResponse {
+  network: string;
+  shows: CatalogNetworkShowSummary[];
 }
 
 export interface CatalogRecentResponse {
