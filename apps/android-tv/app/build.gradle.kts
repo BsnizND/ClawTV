@@ -16,8 +16,8 @@ val configuredReceiverFallbackUrlsJson = providers.gradleProperty("clawtvReceive
         ?.filter { it.isNotEmpty() }
         ?.joinToString(prefix = "[", postfix = "]") { "\"${escapeBuildConfig(it)}\"" }
     ?: "[]"
-val defaultVoiceAssistantName = providers.gradleProperty("clawtvVoiceAssistantName").orNull ?: "Assistant"
-val defaultVoiceAssistantId = providers.gradleProperty("clawtvVoiceAssistantId").orNull ?: "main"
+val defaultVoiceAssistantName = providers.gradleProperty("clawtvVoiceAssistantName").orNull ?: "Kay"
+val defaultVoiceAssistantId = providers.gradleProperty("clawtvVoiceAssistantId").orNull ?: "kay"
 val defaultVoiceGreetingText = providers.gradleProperty("clawtvVoiceGreetingText").orNull ?: ""
 val defaultVoiceProcessingText = providers.gradleProperty("clawtvVoiceProcessingText").orNull ?: "Looking into it."
 val defaultVoiceAcknowledgementText = providers.gradleProperty("clawtvVoiceAcknowledgementText").orNull ?: "Got you."
@@ -32,8 +32,8 @@ android {
         applicationId = "tv.clawtv.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
 
         buildConfigField("String", "CLAWTV_RECEIVER_URL", "\"${escapeBuildConfig(configuredReceiverUrl)}\"")
         buildConfigField("String", "CLAWTV_RECEIVER_FALLBACK_URLS_JSON", "\"${escapeBuildConfig(configuredReceiverFallbackUrlsJson)}\"")
