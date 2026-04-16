@@ -773,6 +773,36 @@ async function runCatalogSync(input: {
         items: summarizeSyncedMediaItems(payload.mediaItems)
       };
     } catch (error) {
+      if (input.mode === "incremental-sync" && isForeignKeyConstraintError(error)) {
+        console.warn("Incremental ClawTV sync hit a foreign key constraint; retrying with a full sync.");
+
+        try {
+          const fallbackStartedAt = new Date().toISOString();
+          const payload = await syncPlexCatalog({
+            baseUrl: input.plexBaseUrl,
+            token: input.plexToken,
+            mode: "full-sync",
+            library: input.library
+          });
+          const finishedAt = new Date().toISOString();
+          const syncRun = db.applyCatalogSync(payload, {
+            mode: "full-sync",
+            status: "success",
+            startedAt: fallbackStartedAt,
+            finishedAt,
+            librariesSynced: payload.libraries.length,
+            mediaItemsSynced: payload.mediaItems.length
+          });
+
+          return {
+            syncRun,
+            items: summarizeSyncedMediaItems(payload.mediaItems)
+          };
+        } catch (fallbackError) {
+          error = fallbackError;
+        }
+      }
+
       const finishedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : "Plex sync failed.";
       const syncRun = db.recordFailedSyncRun({
@@ -792,6 +822,10 @@ async function runCatalogSync(input: {
   })();
 
   return syncInFlight;
+}
+
+function isForeignKeyConstraintError(error: unknown): boolean {
+  return error instanceof Error && /FOREIGN KEY constraint failed/iu.test(error.message);
 }
 
 async function checkForNewContent(input: {
