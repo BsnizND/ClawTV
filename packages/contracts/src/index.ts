@@ -14,6 +14,7 @@ export type VoiceSttMode = "shield" | "server";
 export type VoiceBackendMode = "mock" | "openclaw";
 export type RecommendationStrategy = "default" | "random" | "highly-rated";
 export type LiveTvProvider = "youtube-tv";
+export type VoiceActionName = CommandName | "live-tv-tune" | "none";
 
 export interface SessionSummary {
   id: string;
@@ -320,6 +321,6 @@ export interface VoiceTurnResponse {
   replyMode: VoiceReplyMode;
   expectsReply: boolean;
   resumePlayback: boolean;
-  action: CommandName | "none";
+  action: VoiceActionName;
   playback: PlaybackSnapshot;
 }

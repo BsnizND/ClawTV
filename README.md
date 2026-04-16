@@ -158,10 +158,14 @@ ClawTV now has a small MVP path for launching YouTube TV on a networked Android 
 
 - configure `CLAWTV_ANDROID_TV_ADB_SERIAL` with the Shield's ADB serial or `host:port`
 - ensure ADB debugging is enabled on the Shield and the server host can reach it
-- map channel names to YouTube TV watch URLs with `CLAWTV_YOUTUBE_TV_CHANNEL_URLS_JSON`
+- map local or custom channel names to YouTube TV watch URLs with `CLAWTV_YOUTUBE_TV_CHANNEL_URLS_JSON`
 - run `clawtv live-tv --provider youtube-tv --channel cnn`
 
-The first cut is intentionally simple: the server launches the external app on the Shield and tunes the configured channel. It does not proxy the live stream through ClawTV or keep the receiver app in the foreground.
+The server now ships with a built-in lineup for common non-local channels like `CNN`, `ESPN`, `ESPN2`, `ESPNews`, `ESPNU`, `MS NOW`, `Golf Channel`, `CNBC`, `FOX News`, and `FOX Business`. Local affiliates like `ABC`, `NBC`, `FOX`, and `PBS` stay environment-driven so each deployment can map its own market correctly.
+
+Voice turns stay agentic. With `CLAWTV_VOICE_BACKEND=openclaw`, Kay can choose the new `live-tv-tune` action for requests like `Please turn on Fox News`, and she can answer live TV questions like `What's on ABC right now?` or `What sports are on now?` using her normal reasoning path plus any web context or tools available to the OpenClaw agent.
+
+The live-TV path is still intentionally simple: the server launches the external app on the Shield and tunes the configured channel. It does not proxy the live stream through ClawTV or keep the receiver app in the foreground.
 
 ## Docs
 

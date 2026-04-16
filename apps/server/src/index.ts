@@ -55,9 +55,128 @@ let syncInFlight: Promise<{
   syncRun: CheckNewContentResponse["syncRun"];
   items: MediaItemSummary[];
 }> | null = null;
-const defaultYouTubeTvChannels = {
-  cnn: "https://tv.youtube.com/watch/TJSwwtXbvLw"
-} as const;
+type LiveTvChannelDefinition = {
+  key: string;
+  label: string;
+  aliases: string[];
+  provider: LiveTvProvider;
+  defaultUrl?: string;
+};
+
+type ResolvedLiveTvChannel = LiveTvChannelDefinition & {
+  url: string | null;
+};
+
+let lastLiveTvTune: {
+  provider: LiveTvProvider;
+  channelKey: string;
+  channelLabel: string;
+  launchedUrl: string;
+  tunedAt: string;
+} | null = null;
+
+const youTubeTvChannelCatalog = [
+  {
+    key: "abc",
+    label: "ABC",
+    aliases: ["abc", "abc local", "channel abc"],
+    provider: "youtube-tv"
+  },
+  {
+    key: "cnbc",
+    label: "CNBC",
+    aliases: ["cnbc"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/watch/cw87fKrpKUc"
+  },
+  {
+    key: "cnn",
+    label: "CNN",
+    aliases: ["cnn"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/watch/TJSwwtXbvLw"
+  },
+  {
+    key: "espn",
+    label: "ESPN",
+    aliases: ["espn"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/watch/ferg3lVdMOg"
+  },
+  {
+    key: "espn2",
+    label: "ESPN2",
+    aliases: ["espn2", "espn 2"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/watch/qHoTWZ9M9gw"
+  },
+  {
+    key: "espn-news",
+    label: "ESPNews",
+    aliases: ["espnews", "espn news", "espn now"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/watch/ReMgHDtmz_w"
+  },
+  {
+    key: "espnu",
+    label: "ESPNU",
+    aliases: ["espnu", "espn u"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/watch/6x-T96Q-5eY"
+  },
+  {
+    key: "fox",
+    label: "FOX",
+    aliases: ["fox", "fox local", "channel fox"],
+    provider: "youtube-tv"
+  },
+  {
+    key: "fox-business",
+    label: "FOX Business",
+    aliases: ["fox business", "foxbusiness", "fbn"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/watch/dfo8tRrx8Yc"
+  },
+  {
+    key: "fox-news",
+    label: "FOX News",
+    aliases: ["fox news", "foxnews", "fox news channel", "fnc"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/watch/SBwjcDPe99c"
+  },
+  {
+    key: "golf-channel",
+    label: "Golf Channel",
+    aliases: ["golf", "golf channel"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/watch/ll39j_Jw-yM"
+  },
+  {
+    key: "ms-now",
+    label: "MS NOW",
+    aliases: ["ms now", "msnow", "msnbc"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/watch/FKRGbcbVW1I"
+  },
+  {
+    key: "nbc",
+    label: "NBC",
+    aliases: ["nbc", "nbc local", "channel nbc"],
+    provider: "youtube-tv"
+  },
+  {
+    key: "pbs",
+    label: "PBS",
+    aliases: ["pbs", "arizona pbs", "arizonapbs", "pbs local"],
+    provider: "youtube-tv"
+  }
+] as const satisfies readonly LiveTvChannelDefinition[];
+
+function getLiveTvChannelDefaultUrl(channel: LiveTvChannelDefinition): string | null {
+  return "defaultUrl" in channel && typeof channel.defaultUrl === "string"
+    ? channel.defaultUrl
+    : null;
+}
 
 type VoiceDecision = {
   ok: boolean;
@@ -998,33 +1117,97 @@ function parseLiveTvProvider(value: unknown): LiveTvProvider {
 }
 
 function normalizeLiveTvChannelKey(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/gu, "-");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
 }
 
-function resolveYouTubeTvChannelUrls(): Record<string, string> {
+function resolveYouTubeTvChannelConfig(): Record<string, ResolvedLiveTvChannel> {
   const raw = process.env.CLAWTV_YOUTUBE_TV_CHANNEL_URLS_JSON?.trim();
+  const defaults = Object.fromEntries(
+    youTubeTvChannelCatalog.map((channel) => [
+      channel.key,
+      {
+        ...channel,
+        url: getLiveTvChannelDefaultUrl(channel)
+      }
+    ])
+  ) as Record<string, ResolvedLiveTvChannel>;
 
   if (!raw) {
-    return { ...defaultYouTubeTvChannels };
+    return defaults;
   }
 
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const entries = Object.entries(parsed)
-      .flatMap(([channel, url]) => {
-        if (typeof url !== "string" || url.trim().length === 0) {
-          return [];
+    const channels = { ...defaults };
+
+    for (const [channelName, url] of Object.entries(parsed)) {
+      if (typeof url !== "string" || url.trim().length === 0) {
+        continue;
+      }
+
+      const channelKey = normalizeLiveTvChannelKey(channelName);
+      const existing = channels[channelKey];
+      channels[channelKey] = existing
+        ? {
+          ...existing,
+          url: url.trim()
         }
+        : {
+          key: channelKey,
+          label: channelName.trim(),
+          aliases: [channelName.trim()],
+          provider: "youtube-tv",
+          url: url.trim()
+        };
+    }
 
-        return [[normalizeLiveTvChannelKey(channel), url.trim()] as const];
-      });
-
-    return entries.length > 0
-      ? Object.fromEntries(entries)
-      : { ...defaultYouTubeTvChannels };
+    return channels;
   } catch {
     throw new Error("CLAWTV_YOUTUBE_TV_CHANNEL_URLS_JSON is not valid JSON.");
   }
+}
+
+function resolveLiveTvChannelByName(channelName: string): ResolvedLiveTvChannel | null {
+  const channels = resolveYouTubeTvChannelConfig();
+  const normalizedInput = normalizeLiveTvChannelKey(channelName);
+
+  if (channels[normalizedInput]) {
+    return channels[normalizedInput];
+  }
+
+  for (const channel of Object.values(channels)) {
+    if (channel.aliases.some((alias) => normalizeLiveTvChannelKey(alias) === normalizedInput)) {
+      return channel;
+    }
+  }
+
+  return null;
+}
+
+function describeLiveTvChannelsForPrompt(): string {
+  const configuredChannels = Object.values(resolveYouTubeTvChannelConfig())
+    .filter((channel) => Boolean(channel.url))
+    .sort((left, right) => left.label.localeCompare(right.label))
+    .map((channel) => {
+      const aliasSummary = channel.aliases.slice(0, 4).join(", ");
+      return `${channel.label} [key ${channel.key}; aliases: ${aliasSummary}]`;
+    });
+
+  return configuredChannels.length > 0
+    ? configuredChannels.join(" | ")
+    : "No live TV channels are configured right now.";
+}
+
+function describeLastLiveTvTuneForPrompt(): string {
+  if (!lastLiveTvTune) {
+    return "No live TV channel has been tuned by ClawTV since this server started.";
+  }
+
+  return `${lastLiveTvTune.channelLabel} via ${lastLiveTvTune.provider} at ${lastLiveTvTune.tunedAt}.`;
 }
 
 async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse> {
@@ -1038,11 +1221,9 @@ async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse>
   }
 
   const packageName = process.env.CLAWTV_YOUTUBE_TV_PACKAGE?.trim() || "com.google.android.youtube.tvunplugged";
-  const channelKey = normalizeLiveTvChannelKey(input.channel);
-  const channelUrls = resolveYouTubeTvChannelUrls();
-  const channelUrl = channelUrls[channelKey];
+  const channel = resolveLiveTvChannelByName(input.channel);
 
-  if (!channelUrl) {
+  if (!channel || !channel.url) {
     throw new Error(`No ${input.provider} URL is configured for channel "${input.channel}".`);
   }
 
@@ -1059,26 +1240,30 @@ async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse>
     clawTvPlaybackStopped = stopResult.ok;
   }
 
-  if (shouldConnect) {
-    await prepareAdbDevice(adbPath, deviceSerial);
-  }
-
   await launchLiveTvIntent({
     adbPath,
     deviceSerial,
-    channelUrl,
+    channelUrl: channel.url,
     packageName,
     shouldConnect
   });
 
+  lastLiveTvTune = {
+    provider: input.provider,
+    channelKey: channel.key,
+    channelLabel: channel.label,
+    launchedUrl: channel.url,
+    tunedAt: new Date().toISOString()
+  };
+
   return {
     ok: true,
     provider: input.provider,
-    channel: channelKey,
-    message: `Opened ${input.provider} on ${channelKey}.`,
+    channel: channel.key,
+    message: `Opened ${channel.label} in ${input.provider}.`,
     deviceSerial,
     packageName,
-    launchedUrl: channelUrl,
+    launchedUrl: channel.url,
     clawTvPlaybackStopped
   };
 }
@@ -1244,17 +1429,34 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
     if (decision.commandName !== "none") {
       action = decision.commandName;
       finalPayload = decision.payload;
-      const result = db.applyCommand({
-        commandName: decision.commandName,
-        payload: decision.payload,
-        source: "voice"
-      });
-      commandOk = result.ok;
-      commandMessage = result.message;
-      matchedItemCount = result.matchedItemCount;
+      if (decision.commandName === "live-tv-tune") {
+        try {
+          const result = await tuneLiveTv(parseLiveTvTunePayload(decision.payload));
+          commandOk = result.ok;
+          commandMessage = result.message;
 
-      if (!result.ok || !replyText.trim()) {
-        replyText = result.message;
+          if (!replyText.trim()) {
+            replyText = result.message;
+          }
+        } catch (error) {
+          commandOk = false;
+          commandMessage = error instanceof Error ? error.message : "Unable to tune live TV.";
+          ok = false;
+          replyText = commandMessage;
+        }
+      } else {
+        const result = db.applyCommand({
+          commandName: decision.commandName,
+          payload: decision.payload,
+          source: "voice"
+        });
+        commandOk = result.ok;
+        commandMessage = result.message;
+        matchedItemCount = result.matchedItemCount;
+
+        if (!result.ok || !replyText.trim()) {
+          replyText = result.message;
+        }
       }
     }
   }
@@ -1654,11 +1856,13 @@ function buildOpenClawPrompt(input: {
   const recommendationPrompt = input.curatorIntent
     ? `Possible recommendation context for ${input.curatorIntent.show}: use the supplied local watch data and rating data as evidence only after deciding this is really the user's target. If helpful, use web search to compare reputable best-episode or ranking lists before you answer so you feel like a personalized metacritic instead of a library index. Unless the user explicitly asked to play, shuffle, or randomize, keep commandName as none and do not start playback. If you ask a follow-up question or are waiting for a preference, set expectsReply to true. Candidate episodes from the local library: ${recommendationContext}`
     : "If you ask a follow-up question or are waiting for a clarification, set expectsReply to true.";
+  const liveTvPrompt = `Configured live TV channels on YouTube TV: ${describeLiveTvChannelsForPrompt()} Most recent live TV tune: ${describeLastLiveTvTuneForPrompt()} The live TV list is availability context, not schedule truth. If the user asks about what is on right now, when a news program airs, what sports are on, or what channel golf is on, you may use web search or other tools to answer. If the user explicitly asks to switch to a configured live TV channel, use commandName live-tv-tune with payload {"provider":"youtube-tv","channel":"<canonical-key>"}. Do not treat live TV channel names like ESPN, CNBC, FOX News, ABC, NBC, FOX, or PBS as Plex-network intents unless the user is clearly asking about the local library. If you answer a live TV question and a switch might help, offer one or two concrete options and ask if they want you to change the channel.`;
+  const currentTimePrompt = `Current server time: ${new Date().toString()}.`;
 
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
     "Return JSON only.",
-    "Schema: {\"replyText\":\"string\",\"commandName\":\"none|play|play-latest|shuffle|pause|resume|next|stop\",\"payload\":{},\"expectsReply\":boolean}",
+    "Schema: {\"replyText\":\"string\",\"commandName\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"expectsReply\":boolean}",
     "replyText should sound warm, direct, playful, and human. Keep it concise.",
     "Reason first. The user's words may refer to a person, actor, host, network, title, topic, vague memory, or shorthand; do not assume ambiguous phrases are show titles.",
     "If you have access to tools or skills, you may inspect the local ClawTV catalog, current playback, or web context before deciding. Choose tools because your reasoning needs them, not because of a fixed sequence.",
@@ -1681,7 +1885,9 @@ function buildOpenClawPrompt(input: {
     "Do not mention OpenClaw, prompts, JSON, transport, or implementation details.",
     networkPrompt,
     recommendationPrompt,
+    liveTvPrompt,
     `Current playback context: ${playbackSummary}`,
+    currentTimePrompt,
     `User said: ${input.transcript}`
   ].join(" ");
 }
@@ -1823,8 +2029,21 @@ function parseVoiceCommandName(value: unknown): VoiceTurnResponse["action"] {
     || value === "resume"
     || value === "next"
     || value === "stop"
+    || value === "live-tv-tune"
     ? value
     : "none";
+}
+
+function parseLiveTvTunePayload(payload: Record<string, unknown>): LiveTvTuneRequest {
+  const channel = typeof payload.channel === "string" ? payload.channel.trim() : "";
+  if (!channel) {
+    throw new Error("The live TV tune request did not include a channel.");
+  }
+
+  return {
+    provider: parseLiveTvProvider(payload.provider),
+    channel
+  };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
