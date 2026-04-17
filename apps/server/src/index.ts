@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, existsSync, mkdirSync, readdirSync, statSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -14,6 +14,7 @@ import type {
   CheckNewContentResponse,
   ClientPlaybackState,
   CommandName,
+  ExternalLiveTvState,
   LiveTvProvider,
   LiveTvTuneRequest,
   LiveTvTuneResponse,
@@ -26,7 +27,9 @@ import type {
   VoiceTurnResponse,
   PlaybackStateUpdateRequest,
   RecommendationStrategy,
-  SyncMode
+  SyncMode,
+  SyncStatusResponse,
+  VoiceHealthResponse
 } from "@clawtv/contracts";
 import { DEFAULT_BASE_PATH, normalizeBasePath, withBasePath } from "@clawtv/core";
 import { openClawTvDatabase } from "@clawtv/db";
@@ -40,6 +43,9 @@ const port = Number(process.env.PORT ?? 8787);
 const basePath = normalizeBasePath(process.env.CLAWTV_BASE_PATH ?? DEFAULT_BASE_PATH) || DEFAULT_BASE_PATH;
 const webDistDir = join(rootDir, "apps", "web", "dist");
 const execFileAsync = promisify(execFile);
+const runtimeStartedAt = new Date().toISOString();
+const runtimeStdoutLogPath = normalizeRuntimeLogPath(process.env.CLAWTV_SERVER_STDOUT_LOG);
+const runtimeStderrLogPath = normalizeRuntimeLogPath(process.env.CLAWTV_SERVER_STDERR_LOG);
 const db = openClawTvDatabase({
   rootDir,
   dataDir: process.env.CLAWTV_DATA_DIR,
@@ -55,6 +61,11 @@ let syncInFlight: Promise<{
   syncRun: CheckNewContentResponse["syncRun"];
   items: MediaItemSummary[];
 }> | null = null;
+let voiceHealthProbeCache: {
+  result: VoiceHealthResponse;
+  expiresAt: number;
+} | null = null;
+let voiceHealthProbeInFlight: Promise<VoiceHealthResponse> | null = null;
 type LiveTvChannelDefinition = {
   key: string;
   label: string;
@@ -66,14 +77,6 @@ type LiveTvChannelDefinition = {
 type ResolvedLiveTvChannel = LiveTvChannelDefinition & {
   url: string | null;
 };
-
-let lastLiveTvTune: {
-  provider: LiveTvProvider;
-  channelKey: string;
-  channelLabel: string;
-  launchedUrl: string;
-  tunedAt: string;
-} | null = null;
 
 const youTubeTvChannelCatalog = [
   {
@@ -185,6 +188,26 @@ type VoiceDecision = {
   payload: Record<string, unknown>;
   expectsReply: boolean;
   rawReplyText?: string | null;
+  executedAction?: {
+    action: VoiceTurnResponse["action"];
+    payload: Record<string, unknown>;
+    ok: boolean;
+    message: string;
+    matchedItemCount?: number | null;
+  } | null;
+};
+
+type AgentToolCall = {
+  name: string;
+  arguments?: Record<string, unknown>;
+};
+
+type AgentToolOutcome = {
+  name: string;
+  ok: boolean;
+  arguments: Record<string, unknown>;
+  result: unknown;
+  executedAction?: NonNullable<VoiceDecision["executedAction"]>;
 };
 
 mkdirSync(voiceCacheDir, { recursive: true });
@@ -215,7 +238,35 @@ const server = createServer(async (request, response) => {
     sendJson(response, 200, {
       ok: true,
       service: "clawtv-server",
-      basePath
+      basePath,
+      runtimeStartedAt
+    });
+    return;
+  }
+
+  if (request.method === "GET" && routePath === "/api/health/runtime") {
+    const activeProbe = requestUrl.searchParams.get("probe") !== "cached";
+    const voiceConfig = await buildVoiceConfig();
+    const voice = voiceConfig.enabled
+      ? await probeVoiceAssistantHealth(voiceConfig, { force: activeProbe })
+      : {
+          ok: false,
+          assistantId: voiceConfig.assistantId,
+          assistantName: voiceConfig.assistantName,
+          checkedAt: new Date().toISOString(),
+          durationMs: null,
+          cached: false,
+          error: "Voice is disabled."
+        };
+
+    sendJson(response, 200, {
+      ok: voice.ok,
+      service: "clawtv-server",
+      basePath,
+      runtimeStartedAt,
+      playback: buildPlaybackSnapshot(),
+      sync: buildSyncStatusResponse(),
+      voice
     });
     return;
   }
@@ -398,6 +449,11 @@ const server = createServer(async (request, response) => {
     db.setClientPlaybackState(nextState, {
       sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
       positionMs: nextPositionMs,
+      currentItemId: typeof body.currentItemId === "string" ? body.currentItemId : body.currentItemId === null ? null : undefined
+    });
+    maybeClearExternalLiveTvState({
+      sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+      playbackState: nextState,
       currentItemId: typeof body.currentItemId === "string" ? body.currentItemId : body.currentItemId === null ? null : undefined
     });
 
@@ -598,9 +654,7 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "GET" && routePath === "/api/sync/status") {
-    sendJson(response, 200, {
-      latestRun: db.getLatestSyncRun()
-    });
+    sendJson(response, 200, buildSyncStatusResponse());
     return;
   }
 
@@ -680,6 +734,7 @@ const server = createServer(async (request, response) => {
       payload: body,
       source: "cli"
     });
+    maybeClearExternalLiveTvStateForCommand(commandName, result.ok);
 
     sendJson(response, result.ok ? 202 : 404, result);
     return;
@@ -700,6 +755,8 @@ server.listen(port, () => {
   console.log(`API status endpoint: http://localhost:${port}${withBasePath(basePath, "/api/status")}`);
 });
 
+trimRuntimeLogsIfNeeded();
+setInterval(trimRuntimeLogsIfNeeded, resolveRuntimeLogTrimIntervalMs()).unref();
 startAutomaticIncrementalSyncLoop();
 
 async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
@@ -735,6 +792,7 @@ async function runCatalogSync(input: {
 
   syncInFlight = (async () => {
     const startedAt = new Date().toISOString();
+    let attemptedPayloadSummary: Record<string, unknown> | null = null;
 
     if (!input.plexToken) {
       const syncRun = db.recordFailedSyncRun({
@@ -743,7 +801,10 @@ async function runCatalogSync(input: {
         startedAt,
         librariesSynced: 0,
         mediaItemsSynced: 0,
-        errorMessage: "PLEX_TOKEN is not configured on the server."
+        errorMessage: "PLEX_TOKEN is not configured on the server.",
+        details: {
+          library: input.library ?? null
+        }
       });
 
       throw Object.assign(new Error("PLEX_TOKEN is not configured on the server."), { syncRun });
@@ -758,6 +819,7 @@ async function runCatalogSync(input: {
         library: input.library,
         lastSuccessfulSyncAt: lastSuccessfulSync?.finishedAt ?? null
       });
+      attemptedPayloadSummary = summarizeCatalogSyncPayload(payload);
       const finishedAt = new Date().toISOString();
       const syncRun = db.applyCatalogSync(payload, {
         mode: input.mode,
@@ -765,7 +827,11 @@ async function runCatalogSync(input: {
         startedAt,
         finishedAt,
         librariesSynced: payload.libraries.length,
-        mediaItemsSynced: payload.mediaItems.length
+        mediaItemsSynced: payload.mediaItems.length,
+        details: {
+          library: input.library ?? null,
+          fallbackUsed: false
+        }
       });
 
       return {
@@ -791,7 +857,14 @@ async function runCatalogSync(input: {
             startedAt: fallbackStartedAt,
             finishedAt,
             librariesSynced: payload.libraries.length,
-            mediaItemsSynced: payload.mediaItems.length
+            mediaItemsSynced: payload.mediaItems.length,
+            details: {
+              library: input.library ?? null,
+              fallbackUsed: true,
+              fallbackReason: error.message,
+              attemptedMode: input.mode,
+              attemptedPayloadSummary
+            }
           });
 
           return {
@@ -812,7 +885,12 @@ async function runCatalogSync(input: {
         finishedAt,
         librariesSynced: 0,
         mediaItemsSynced: 0,
-        errorMessage: message
+        errorMessage: message,
+        details: {
+          library: input.library ?? null,
+          attemptedMode: input.mode,
+          attemptedPayloadSummary
+        }
       });
 
       throw Object.assign(error instanceof Error ? error : new Error(message), { syncRun });
@@ -824,7 +902,115 @@ async function runCatalogSync(input: {
   return syncInFlight;
 }
 
-function isForeignKeyConstraintError(error: unknown): boolean {
+function buildSyncStatusResponse(): SyncStatusResponse {
+  return {
+    latestRun: db.getLatestSyncRun(),
+    latestSuccessfulRun: db.getLatestSuccessfulSyncRun(),
+    latestFailedRun: db.getLatestFailedSyncRun()
+  };
+}
+
+function summarizeCatalogSyncPayload(payload: {
+  libraries: Array<{ id: string }>;
+  mediaItems: Array<{ id: string; mediaType: string; libraryId: string }>;
+  collections: Array<{ id: string }>;
+  tags: Array<{ mediaItemId: string }>;
+}): Record<string, unknown> {
+  return {
+    libraries: payload.libraries.length,
+    mediaItems: payload.mediaItems.length,
+    collections: payload.collections.length,
+    tags: payload.tags.length,
+    sampleMediaItemIds: payload.mediaItems.slice(0, 12).map((item) => item.id),
+    sampleCollectionIds: payload.collections.slice(0, 8).map((collection) => collection.id),
+    sampleLibraryIds: payload.libraries.slice(0, 8).map((library) => library.id)
+  };
+}
+
+function maybeClearExternalLiveTvState(input: {
+  sessionId?: string | null;
+  playbackState?: ClientPlaybackState;
+  currentItemId?: string | null;
+}): void {
+  const shouldClear = input.currentItemId !== undefined
+    ? Boolean(input.currentItemId)
+    : input.playbackState === "loading" || input.playbackState === "playing";
+
+  if (!shouldClear) {
+    return;
+  }
+
+  db.clearExternalLiveTvState(input.sessionId);
+}
+
+function maybeClearExternalLiveTvStateForCommand(commandName: CommandName, commandOk: boolean): void {
+  if (!commandOk) {
+    return;
+  }
+
+  if (commandName === "play" || commandName === "play-latest" || commandName === "shuffle" || commandName === "resume") {
+    db.clearExternalLiveTvState();
+  }
+}
+
+async function probeVoiceAssistantHealth(
+  voiceConfig: VoiceConfig,
+  input?: {
+    force?: boolean;
+  }
+): Promise<VoiceHealthResponse> {
+  if (!input?.force && voiceHealthProbeCache && voiceHealthProbeCache.expiresAt > Date.now()) {
+    return {
+      ...voiceHealthProbeCache.result,
+      cached: true
+    };
+  }
+
+  if (voiceHealthProbeInFlight) {
+    return voiceHealthProbeInFlight;
+  }
+
+  const startedAt = Date.now();
+  voiceHealthProbeInFlight = (async () => {
+    const rawText = await runOpenClawJsonPrompt({
+      prompt: "Return JSON only. {\"replyText\":\"ok\",\"commandName\":\"none\",\"payload\":{},\"expectsReply\":false}",
+      agentId: voiceConfig.assistantId,
+      timeoutSeconds: 20,
+      thinking: "minimal"
+    });
+    const durationMs = Date.now() - startedAt;
+    const result: VoiceHealthResponse = rawText
+      ? {
+          ok: true,
+          assistantId: voiceConfig.assistantId,
+          assistantName: voiceConfig.assistantName,
+          checkedAt: new Date().toISOString(),
+          durationMs,
+          cached: false,
+          error: null
+        }
+      : {
+          ok: false,
+          assistantId: voiceConfig.assistantId,
+          assistantName: voiceConfig.assistantName,
+          checkedAt: new Date().toISOString(),
+          durationMs,
+          cached: false,
+          error: "OpenClaw did not return a health-check reply."
+        };
+
+    voiceHealthProbeCache = {
+      result,
+      expiresAt: Date.now() + 30_000
+    };
+    voiceHealthProbeInFlight = null;
+    return result;
+  })();
+
+  return voiceHealthProbeInFlight;
+}
+
+function isForeignKeyConstraintError(error: unknown): error is Error {
   return error instanceof Error && /FOREIGN KEY constraint failed/iu.test(error.message);
 }
 
@@ -1121,6 +1307,7 @@ function sendJson(response: ServerResponse, statusCode: number, payload: unknown
 
 function buildPlaybackSnapshot() {
   const snapshot = db.getPlaybackSnapshot();
+  const externalLiveTv = snapshot.sessionId ? db.getExternalLiveTvState(snapshot.sessionId) : null;
 
   if (activeHlsSession && snapshot.currentItem?.id !== activeHlsSession.mediaItemId) {
     activeHlsSession = null;
@@ -1129,6 +1316,7 @@ function buildPlaybackSnapshot() {
   if (!snapshot.currentItem) {
     return {
       ...snapshot,
+      externalLiveTv,
       streamPath: null,
       diagnostics: latestPlaybackDiagnostics
     };
@@ -1141,6 +1329,7 @@ function buildPlaybackSnapshot() {
       posterUrl: withBasePath(basePath, `/api/playback/art/current?kind=poster&currentItemId=${encodeURIComponent(snapshot.currentItem.id)}`),
       thumbUrl: withBasePath(basePath, `/api/playback/art/current?kind=thumb&currentItemId=${encodeURIComponent(snapshot.currentItem.id)}`)
     },
+    externalLiveTv,
     streamPath: snapshot.currentItem ? withBasePath(basePath, "/api/playback/hls/current.m3u8") : null,
     diagnostics: latestPlaybackDiagnostics
   };
@@ -1237,11 +1426,13 @@ function describeLiveTvChannelsForPrompt(): string {
 }
 
 function describeLastLiveTvTuneForPrompt(): string {
-  if (!lastLiveTvTune) {
+  const liveTvState = db.getExternalLiveTvState();
+
+  if (!liveTvState) {
     return "No live TV channel has been tuned by ClawTV since this server started.";
   }
 
-  return `${lastLiveTvTune.channelLabel} via ${lastLiveTvTune.provider} at ${lastLiveTvTune.tunedAt}.`;
+  return `${liveTvState.channelLabel} via ${liveTvState.provider} at ${liveTvState.tunedAt}. Active: ${liveTvState.isActive ? "yes" : "no"}.`;
 }
 
 async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse> {
@@ -1282,13 +1473,19 @@ async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse>
     shouldConnect
   });
 
-  lastLiveTvTune = {
+  const tunedAt = new Date().toISOString();
+  const sessionId = buildPlaybackSnapshot().sessionId ?? process.env.CLAWTV_DEFAULT_SESSION_ID?.trim() ?? "primary-tv";
+  db.setExternalLiveTvState({
+    sessionId,
     provider: input.provider,
     channelKey: channel.key,
     channelLabel: channel.label,
     launchedUrl: channel.url,
-    tunedAt: new Date().toISOString()
-  };
+    tunedAt,
+    packageName,
+    deviceSerial,
+    isActive: true
+  });
 
   return {
     ok: true,
@@ -1405,6 +1602,7 @@ async function buildVoiceConfig(): Promise<VoiceConfig> {
 async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: VoiceConfig): Promise<VoiceTurnResponse> {
   const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
   const playbackBefore = buildPlaybackSnapshot();
+  const sessionId = typeof body.sessionId === "string" ? body.sessionId : playbackBefore.sessionId;
   const shouldResumeOriginalPlayback = body.playbackState === "playing" || body.playbackState === "loading";
   let action: VoiceTurnResponse["action"] = "none";
   let replyText = "";
@@ -1424,35 +1622,12 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
 
   if (!transcript) {
     replyText = "I didn't catch that. Please try again.";
-  } else if (matchesVoiceCommand(transcript, ["pause", "hold on", "stop playback"])) {
-    action = "pause";
-    const result = db.applyCommand({
-      commandName: "pause",
-      payload: {},
-      source: "voice"
-    });
-    replyText = result.message;
-  } else if (matchesVoiceCommand(transcript, ["resume", "keep going", "continue playback"])) {
-    action = "resume";
-    const result = db.applyCommand({
-      commandName: "resume",
-      payload: {},
-      source: "voice"
-    });
-    replyText = result.message;
-  } else if (matchesVoiceCommand(transcript, ["stop", "turn it off"])) {
-    action = "stop";
-    const result = db.applyCommand({
-      commandName: "stop",
-      payload: {},
-      source: "voice"
-    });
-    replyText = result.message;
   } else {
     const decision = await buildConversationalReply({
       transcript,
       playback: playbackBefore,
-      voiceConfig
+      voiceConfig,
+      sessionId
     });
 
     replyText = decision.replyText;
@@ -1460,7 +1635,17 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
     ok = decision.ok;
     rawDecision = decision;
 
-    if (decision.commandName !== "none") {
+    if (decision.executedAction) {
+      action = decision.executedAction.action;
+      finalPayload = decision.executedAction.payload;
+      commandOk = decision.executedAction.ok;
+      commandMessage = decision.executedAction.message;
+      matchedItemCount = decision.executedAction.matchedItemCount ?? null;
+
+      if (!replyText.trim()) {
+        replyText = decision.executedAction.message;
+      }
+    } else if (decision.commandName !== "none") {
       action = decision.commandName;
       finalPayload = decision.payload;
       if (decision.commandName === "live-tv-tune") {
@@ -1484,6 +1669,7 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
           payload: decision.payload,
           source: "voice"
         });
+        maybeClearExternalLiveTvStateForCommand(decision.commandName, result.ok);
         commandOk = result.ok;
         commandMessage = result.message;
         matchedItemCount = result.matchedItemCount;
@@ -1499,7 +1685,7 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
   const replyAudioUrl = await synthesizeVoiceReplyAudio(replyText);
   const replyMode = replyAudioUrl ? "server-audio" : voiceConfig.replyMode;
   db.recordVoiceTurn({
-    sessionId: playbackAfter.sessionId,
+    sessionId: sessionId ?? playbackAfter.sessionId,
     transcript,
     rawReplyText: rawDecision?.rawReplyText ?? rawDecision?.replyText ?? null,
     rawCommandName: rawDecision?.commandName ?? null,
@@ -1543,12 +1729,11 @@ async function buildConversationalReply(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
+  sessionId?: string | null;
 }): Promise<VoiceDecision> {
   if (input.voiceConfig.backend === "openclaw") {
-    const networkContext = db.findNetworkContextForTranscript(input.transcript);
     const openClawReply = await runOpenClawVoiceTurn({
-      ...input,
-      networkContext
+      ...input
     });
     if (openClawReply) {
       return openClawReply;
@@ -1817,6 +2002,7 @@ async function runOpenClawVoiceTurn(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
+  sessionId?: string | null;
   networkContext?: ReturnType<typeof db.findNetworkContextForTranscript>;
   curatorIntent?: {
     show: string;
@@ -1831,47 +2017,92 @@ async function runOpenClawVoiceTurn(input: {
   payload: Record<string, unknown>;
   expectsReply: boolean;
   rawReplyText?: string | null;
+  executedAction?: VoiceDecision["executedAction"];
 } | null> {
-  const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
-  const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.voiceConfig.assistantId || "main";
-  const thinking = process.env.CLAWTV_OPENCLAW_THINKING?.trim();
-  const timeoutSeconds = Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90);
-  const prompt = buildOpenClawPrompt(input);
-  const args = [
-    "agent",
-    "--agent",
-    agentId,
-    "--message",
-    prompt,
-    "--timeout",
-    String(Number.isFinite(timeoutSeconds) ? timeoutSeconds : 90),
-    "--json"
-  ];
+  const recentTurns = db.listRecentVoiceTurns(6, input.sessionId ?? input.playback.sessionId ?? null);
+  const networkContext = input.networkContext ?? db.findNetworkContextForTranscript(input.transcript);
+  const toolOutcomes: AgentToolOutcome[] = [];
+  let lastRawText: string | null = null;
+  let executedAction: VoiceDecision["executedAction"] = null;
 
-  if (thinking) {
-    args.splice(5, 0, "--thinking", thinking);
+  for (let step = 0; step < 4; step += 1) {
+    const prompt = buildOpenClawPrompt({
+      ...input,
+      networkContext,
+      recentTurns,
+      toolOutcomes,
+      toolStep: step + 1
+    });
+    const rawText = await runOpenClawJsonPrompt({
+      prompt,
+      agentId: input.voiceConfig.assistantId,
+      timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
+      thinking: process.env.CLAWTV_OPENCLAW_THINKING?.trim()
+    });
+    lastRawText = rawText;
+
+    if (!rawText) {
+      return null;
+    }
+
+    const parsed = parseOpenClawToolLoopReply(rawText);
+
+    if (!parsed) {
+      const fallback = extractOpenClawReplyFromRawText(rawText);
+      return fallback ? {
+        ...fallback,
+        executedAction
+      } : null;
+    }
+
+    if (parsed.type === "final") {
+      return {
+        ok: true,
+        replyText: parsed.replyText,
+        commandName: parsed.commandName,
+        payload: parsed.payload,
+        expectsReply: parsed.expectsReply,
+        rawReplyText: rawText,
+        executedAction
+      };
+    }
+
+    if (parsed.toolCalls.length === 0) {
+      break;
+    }
+
+    const outcomes = await executeAgentToolCalls(parsed.toolCalls, {
+      sessionId: input.sessionId ?? input.playback.sessionId ?? null,
+      playback: input.playback
+    });
+    toolOutcomes.push(...outcomes);
+
+    const lastExecutedAction = outcomes
+      .map((outcome) => outcome.executedAction)
+      .filter((value): value is NonNullable<VoiceDecision["executedAction"]> => Boolean(value))
+      .at(-1);
+
+    if (lastExecutedAction) {
+      executedAction = lastExecutedAction;
+    }
   }
 
-  try {
-    const { stdout } = await execFileAsync(command, args, {
-      env: {
-        ...process.env,
-        PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
-      },
-      maxBuffer: 2 * 1024 * 1024
-    });
-
-    return extractOpenClawReply(stdout);
-  } catch (error) {
-    console.warn("OpenClaw voice handoff failed", error);
+  if (!lastRawText) {
     return null;
   }
+
+  const fallback = extractOpenClawReplyFromRawText(lastRawText);
+  return fallback ? {
+    ...fallback,
+    executedAction
+  } : null;
 }
 
 function buildOpenClawPrompt(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
+  sessionId?: string | null;
   networkContext?: ReturnType<typeof db.findNetworkContextForTranscript>;
   curatorIntent?: {
     show: string;
@@ -1879,48 +2110,47 @@ function buildOpenClawPrompt(input: {
     promptStyle: "broad" | "recommendation" | "best-of";
   };
   recommendation?: CatalogRecommendationResponse;
+  recentTurns: ReturnType<typeof db.listRecentVoiceTurns>;
+  toolOutcomes: AgentToolOutcome[];
+  toolStep: number;
 }): string {
   const playbackSummary = describePlaybackContextForPrompt(input.playback);
+  const externalLiveTvSummary = describeExternalLiveTvStateForPrompt(input.playback.externalLiveTv);
+  const recentTurnsSummary = describeRecentVoiceTurnsForPrompt(input.recentTurns);
+  const toolResultsSummary = describeToolOutcomesForPrompt(input.toolOutcomes);
   const recommendationContext = input.recommendation
     ? describeRecommendationContextForPrompt(input.recommendation)
     : "No recommendation candidate list was provided for this turn.";
   const networkPrompt = input.networkContext
-    ? `Possible network/category context: local Plex network metadata has ${input.networkContext.network} with these shows available: ${describeNetworkContextForPrompt(input.networkContext)}. Treat this as evidence, not a pre-decided intent. If your reasoning says the user really means this network/category and wants playback, use commandName shuffle with payload {"network":"${input.networkContext.network}"}. Do not invent a collection for this.`
+    ? `Possible local Plex network context: ${input.networkContext.network} with shows ${describeNetworkContextForPrompt(input.networkContext)}. Treat this as evidence only, not a pre-decided intent.`
     : "No local network/category candidate list was provided for this turn.";
   const recommendationPrompt = input.curatorIntent
-    ? `Possible recommendation context for ${input.curatorIntent.show}: use the supplied local watch data and rating data as evidence only after deciding this is really the user's target. If helpful, use web search to compare reputable best-episode or ranking lists before you answer so you feel like a personalized metacritic instead of a library index. Unless the user explicitly asked to play, shuffle, or randomize, keep commandName as none and do not start playback. If you ask a follow-up question or are waiting for a preference, set expectsReply to true. Candidate episodes from the local library: ${recommendationContext}`
-    : "If you ask a follow-up question or are waiting for a clarification, set expectsReply to true.";
-  const liveTvPrompt = `Configured live TV channels on YouTube TV: ${describeLiveTvChannelsForPrompt()} Most recent live TV tune: ${describeLastLiveTvTuneForPrompt()} The live TV list is availability context, not schedule truth. If the user asks about what is on right now, when a news program airs, what sports are on, or what channel golf is on, you may use web search or other tools to answer. If the user explicitly asks to switch to a configured live TV channel, use commandName live-tv-tune with payload {"provider":"youtube-tv","channel":"<canonical-key>"}. Do not treat live TV channel names like ESPN, CNBC, FOX News, ABC, NBC, FOX, or PBS as Plex-network intents unless the user is clearly asking about the local library. If you answer a live TV question and a switch might help, offer one or two concrete options and ask if they want you to change the channel.`;
+    ? `Possible recommendation context for ${input.curatorIntent.show}: ${recommendationContext}`
+    : "If you ask a follow-up question or are waiting for clarification, set expectsReply to true.";
+  const liveTvPrompt = `Configured live TV channels on YouTube TV: ${describeLiveTvChannelsForPrompt()} Last known live TV state: ${describeLastLiveTvTuneForPrompt()} Current external live TV state: ${externalLiveTvSummary}. ClawTV can launch or retune YouTube TV, but once the YouTube TV app is open it does not control in-app playback like pause/resume/seek/channel-up.`;
   const currentTimePrompt = `Current server time: ${new Date().toString()}.`;
 
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
     "Return JSON only.",
-    "Schema: {\"replyText\":\"string\",\"commandName\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"expectsReply\":boolean}",
+    `This is tool-loop step ${input.toolStep}.`,
+    "You must return one of these JSON shapes only:",
+    "{\"type\":\"tool_calls\",\"toolCalls\":[{\"name\":\"get_playback_state\",\"arguments\":{}},{\"name\":\"search_catalog\",\"arguments\":{\"query\":\"...\",\"mediaType\":\"show|season|episode|movie|any\",\"limit\":5}},{\"name\":\"get_recent_additions\",\"arguments\":{\"mediaType\":\"show|season|episode|movie|any\",\"limit\":5}},{\"name\":\"get_sync_status\",\"arguments\":{}},{\"name\":\"list_live_tv_channels\",\"arguments\":{}},{\"name\":\"get_live_tv_state\",\"arguments\":{}},{\"name\":\"recommend_episodes\",\"arguments\":{\"show\":\"...\",\"strategy\":\"default|random|highly-rated\",\"limit\":5}},{\"name\":\"get_network_shows\",\"arguments\":{\"network\":\"...\",\"limit\":8}},{\"name\":\"tune_live_tv\",\"arguments\":{\"provider\":\"youtube-tv\",\"channel\":\"canonical-key-or-alias\"}}]}",
+    "{\"type\":\"final\",\"replyText\":\"string\",\"commandName\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"expectsReply\":boolean}",
     "replyText should sound warm, direct, playful, and human. Keep it concise.",
-    "Reason first. The user's words may refer to a person, actor, host, network, title, topic, vague memory, or shorthand; do not assume ambiguous phrases are show titles.",
-    "If you have access to tools or skills, you may inspect the local ClawTV catalog, current playback, or web context before deciding. Choose tools because your reasoning needs them, not because of a fixed sequence.",
-    "For remembered-description requests like scenes, quotes, clubs, guest stars, or nicknames, identify the canonical title first and then verify the exact local ClawTV match before issuing playback.",
-    "If web search or local reasoning gives you a canonical title, search ClawTV again and use the actual local title in payload. Do not send play for a guessed alias, nickname, or theme phrase.",
-    "A single strong local summary match can count as verification, but if multiple local items plausibly match, ask one short clarifying question instead of guessing.",
-    "If a local catalog lookup finds mentions of a person/topic in episodes but no clear show target, ask one short clarifying question and mention the plausible show names.",
-    "If the user asks about what is currently on, remaining runtime, remaining episodes, or remaining seasons, use the supplied playback context only.",
-    "If the user asks to play a confirmed specific title, use commandName play and payload {\"title\":\"...\"}.",
-    "If the user asks to play some of a confirmed show, or to put on a confirmed show without naming a specific episode, it is okay to ask a recommendation follow-up question first instead of auto-playing.",
-    "If the user asks for the latest episode of a confirmed show/series, use commandName play-latest and payload {\"series\":\"...\"}.",
-    "If the user asks for a random episode of a confirmed show, use commandName shuffle and payload {\"show\":\"...\",\"limit\":1}.",
-    "If the user asks to shuffle a confirmed show, use commandName shuffle and payload {\"show\":\"...\"}.",
-    "If the user explicitly asks to play or shuffle highly rated or best episodes of a confirmed show, use commandName shuffle and payload {\"show\":\"...\",\"highlyRated\":true}.",
-    "If the user asks to shuffle a confirmed TV network or source, use commandName shuffle and payload {\"network\":\"...\"} only when local network evidence supports it.",
-    "Use collection payloads only when a real local collection was supplied in context; never invent a collection from a network name.",
-    "If the user asks for pause, resume, next, or stop, use that commandName with an empty payload object.",
-    "If you are unsure what to play, set commandName to none and ask one short clarifying question.",
-    "Never claim you already started playback unless commandName is not none and matches the action you want executed.",
+    "Reason first. Preserve ambiguity until you have enough evidence. Use tools whenever the answer depends on current playback, recent conversation, live TV state, sync state, or the local catalog.",
+    "For ambiguous or fuzzy requests, prefer a tool call or one short clarifying question over guessing.",
+    "If the user is referring to a prior suggestion with words like yes, that one, the other one, switch to it, or go back, use the recent conversation and current external/live playback state.",
+    "If external live TV is active, do not issue pause, resume, stop, or next as if ClawTV can control the YouTube TV app. Explain the limitation briefly or retune if that is what the user wants.",
+    "If the user wants internal Plex playback, return a final commandName. Use tools to gather evidence first, then return the action.",
+    "If you use the tune_live_tv tool, it already performs the action. After that, return a final response with commandName none unless another action is still needed.",
     "Do not mention OpenClaw, prompts, JSON, transport, or implementation details.",
     networkPrompt,
     recommendationPrompt,
     liveTvPrompt,
     `Current playback context: ${playbackSummary}`,
+    `Recent conversation context: ${recentTurnsSummary}`,
+    `Tool results so far: ${toolResultsSummary}`,
     currentTimePrompt,
     `User said: ${input.transcript}`
   ].join(" ");
@@ -1952,7 +2182,9 @@ function describeNetworkContextForPrompt(input: NonNullable<ReturnType<typeof db
 
 function describePlaybackContextForPrompt(snapshot: PlaybackSnapshot): string {
   if (!snapshot.currentItem) {
-    return "Nothing is currently playing.";
+    return snapshot.externalLiveTv?.isActive
+      ? `ClawTV is not playing internal media. External live TV is active on ${snapshot.externalLiveTv.channelLabel}.`
+      : "Nothing is currently playing in ClawTV.";
   }
 
   const parts = [
@@ -1974,7 +2206,7 @@ function describePlaybackContextForPrompt(snapshot: PlaybackSnapshot): string {
   return parts.join(" | ");
 }
 
-function extractOpenClawReply(stdout: string): {
+function extractOpenClawReplyFromRawText(rawText: string): {
   ok: boolean;
   replyText: string;
   commandName: VoiceTurnResponse["action"];
@@ -1983,26 +2215,6 @@ function extractOpenClawReply(stdout: string): {
   rawReplyText?: string | null;
 } | null {
   try {
-    const payload = JSON.parse(stdout) as {
-      result?: {
-        payloads?: Array<{
-          text?: string | null;
-        }>;
-        finalAssistantVisibleText?: string | null;
-      };
-    };
-
-    const rawText = payload.result?.payloads
-      ?.map((entry) => entry.text?.trim())
-      .filter((entry): entry is string => Boolean(entry))
-      .join("\n\n")
-      || payload.result?.finalAssistantVisibleText?.trim()
-      || null;
-
-    if (!rawText) {
-      return null;
-    }
-
     const decision = JSON.parse(rawText) as {
       replyText?: unknown;
       commandName?: unknown;
@@ -2024,35 +2236,320 @@ function extractOpenClawReply(stdout: string): {
     };
   } catch (error) {
     console.warn("Unable to parse OpenClaw agent JSON output", error);
+    return rawText ? {
+      ok: true,
+      replyText: rawText,
+      commandName: "none",
+      payload: {},
+      expectsReply: rawText.trim().endsWith("?"),
+      rawReplyText: rawText
+    } : null;
+  }
+}
+
+function parseOpenClawToolLoopReply(rawText: string): (
+  | {
+      type: "tool_calls";
+      toolCalls: AgentToolCall[];
+    }
+  | {
+      type: "final";
+      replyText: string;
+      commandName: VoiceTurnResponse["action"];
+      payload: Record<string, unknown>;
+      expectsReply: boolean;
+    }
+) | null {
+  try {
+    const parsed = JSON.parse(rawText) as {
+      type?: unknown;
+      toolCalls?: unknown;
+      replyText?: unknown;
+      commandName?: unknown;
+      payload?: unknown;
+      expectsReply?: unknown;
+    };
+
+    if (parsed.type === "tool_calls" || Array.isArray(parsed.toolCalls)) {
+      const toolCalls = Array.isArray(parsed.toolCalls)
+        ? parsed.toolCalls
+            .filter(isPlainObject)
+            .map((toolCall) => ({
+              name: typeof toolCall.name === "string" ? toolCall.name : "",
+              arguments: isPlainObject(toolCall.arguments) ? toolCall.arguments : {}
+            }))
+            .filter((toolCall) => toolCall.name.length > 0)
+        : [];
+
+      return {
+        type: "tool_calls",
+        toolCalls
+      };
+    }
+
+    if (parsed.type === "final" || typeof parsed.replyText === "string" || typeof parsed.commandName === "string") {
+      return {
+        type: "final",
+        replyText: typeof parsed.replyText === "string" && parsed.replyText.trim().length > 0
+          ? parsed.replyText.trim()
+          : "",
+        commandName: parseVoiceCommandName(parsed.commandName),
+        payload: isPlainObject(parsed.payload) ? parsed.payload : {},
+        expectsReply: typeof parsed.expectsReply === "boolean"
+          ? parsed.expectsReply
+          : false
+      };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function executeAgentToolCalls(
+  toolCalls: AgentToolCall[],
+  input: {
+    sessionId: string | null;
+    playback: PlaybackSnapshot;
+  }
+): Promise<AgentToolOutcome[]> {
+  const outcomes: AgentToolOutcome[] = [];
+
+  for (const toolCall of toolCalls.slice(0, 4)) {
+    const args = toolCall.arguments ?? {};
 
     try {
-      const payload = JSON.parse(stdout) as {
-        result?: {
-          payloads?: Array<{
-            text?: string | null;
-          }>;
-          finalAssistantVisibleText?: string | null;
-        };
-      };
-      const rawText = payload.result?.payloads
-        ?.map((entry) => entry.text?.trim())
-        .filter((entry): entry is string => Boolean(entry))
-        .join("\n\n")
-        || payload.result?.finalAssistantVisibleText?.trim()
-        || null;
-
-      return rawText ? {
-        ok: true,
-        replyText: rawText,
-        commandName: "none",
-        payload: {},
-        expectsReply: rawText.trim().endsWith("?"),
-        rawReplyText: rawText
-      } : null;
-    } catch {
-      return null;
+      switch (toolCall.name) {
+        case "get_playback_state":
+          outcomes.push({
+            name: toolCall.name,
+            ok: true,
+            arguments: args,
+            result: buildPlaybackSnapshot()
+          });
+          break;
+        case "search_catalog":
+          outcomes.push({
+            name: toolCall.name,
+            ok: true,
+            arguments: args,
+            result: db.searchCatalog({
+              query: typeof args.query === "string" ? args.query : "",
+              mediaType: parseCatalogMediaType(typeof args.mediaType === "string" ? args.mediaType : null),
+              limit: typeof args.limit === "number" ? args.limit : undefined
+            })
+          });
+          break;
+        case "get_recent_additions":
+          outcomes.push({
+            name: toolCall.name,
+            ok: true,
+            arguments: args,
+            result: db.listRecentlyAdded({
+              mediaType: parseCatalogMediaType(typeof args.mediaType === "string" ? args.mediaType : null),
+              limit: typeof args.limit === "number" ? args.limit : undefined
+            })
+          });
+          break;
+        case "get_sync_status":
+          outcomes.push({
+            name: toolCall.name,
+            ok: true,
+            arguments: args,
+            result: buildSyncStatusResponse()
+          });
+          break;
+        case "list_live_tv_channels":
+          outcomes.push({
+            name: toolCall.name,
+            ok: true,
+            arguments: args,
+            result: Object.values(resolveYouTubeTvChannelConfig()).map((channel) => ({
+              key: channel.key,
+              label: channel.label,
+              aliases: channel.aliases,
+              provider: channel.provider,
+              urlConfigured: Boolean(channel.url)
+            }))
+          });
+          break;
+        case "get_live_tv_state":
+          outcomes.push({
+            name: toolCall.name,
+            ok: true,
+            arguments: args,
+            result: buildPlaybackSnapshot().externalLiveTv
+          });
+          break;
+        case "recommend_episodes":
+          outcomes.push({
+            name: toolCall.name,
+            ok: true,
+            arguments: args,
+            result: db.recommendEpisodes({
+              show: typeof args.show === "string" ? args.show : "",
+              strategy: parseRecommendationStrategy(typeof args.strategy === "string" ? args.strategy : null) ?? "default",
+              limit: typeof args.limit === "number" ? args.limit : undefined
+            })
+          });
+          break;
+        case "get_network_shows": {
+          const network = typeof args.network === "string" ? args.network.trim() : "";
+          outcomes.push({
+            name: toolCall.name,
+            ok: network.length > 0,
+            arguments: args,
+            result: network.length > 0
+              ? db.listNetworkShows(network, typeof args.limit === "number" ? args.limit : undefined)
+              : { error: "A network name is required." }
+          });
+          break;
+        }
+        case "tune_live_tv": {
+          const request = parseLiveTvTunePayload(args);
+          const result = await tuneLiveTv(request);
+          outcomes.push({
+            name: toolCall.name,
+            ok: result.ok,
+            arguments: args,
+            result,
+            executedAction: {
+              action: "live-tv-tune",
+              payload: {
+                provider: request.provider,
+                channel: result.channel
+              },
+              ok: result.ok,
+              message: result.message
+            }
+          });
+          break;
+        }
+        default:
+          outcomes.push({
+            name: toolCall.name,
+            ok: false,
+            arguments: args,
+            result: {
+              error: `Unknown tool: ${toolCall.name}`
+            }
+          });
+          break;
+      }
+    } catch (error) {
+      outcomes.push({
+        name: toolCall.name,
+        ok: false,
+        arguments: args,
+        result: {
+          error: error instanceof Error ? error.message : `Tool ${toolCall.name} failed.`
+        }
+      });
     }
   }
+
+  return outcomes;
+}
+
+async function runOpenClawJsonPrompt(input: {
+  prompt: string;
+  agentId: string;
+  timeoutSeconds: number;
+  thinking?: string | null;
+}): Promise<string | null> {
+  const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
+  const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.agentId || "main";
+  const timeoutSeconds = Number.isFinite(input.timeoutSeconds) ? input.timeoutSeconds : 90;
+  const args = [
+    "agent",
+    "--agent",
+    agentId,
+    "--message",
+    input.prompt,
+    "--timeout",
+    String(timeoutSeconds),
+    "--json"
+  ];
+
+  if (input.thinking) {
+    args.splice(5, 0, "--thinking", input.thinking);
+  }
+
+  try {
+    const { stdout } = await execFileAsync(command, args, {
+      env: {
+        ...process.env,
+        PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
+      },
+      maxBuffer: 2 * 1024 * 1024
+    });
+
+    return extractOpenClawRawText(stdout);
+  } catch (error) {
+    console.warn("OpenClaw voice handoff failed", error);
+    return null;
+  }
+}
+
+function extractOpenClawRawText(stdout: string): string | null {
+  try {
+    const payload = JSON.parse(stdout) as {
+      result?: {
+        payloads?: Array<{
+          text?: string | null;
+        }>;
+        finalAssistantVisibleText?: string | null;
+      };
+    };
+
+    return payload.result?.payloads
+      ?.map((entry) => entry.text?.trim())
+      .filter((entry): entry is string => Boolean(entry))
+      .join("\n\n")
+      || payload.result?.finalAssistantVisibleText?.trim()
+      || null;
+  } catch {
+    return null;
+  }
+}
+
+function describeRecentVoiceTurnsForPrompt(recentTurns: ReturnType<typeof db.listRecentVoiceTurns>): string {
+  if (recentTurns.length === 0) {
+    return "No recent voice-turn history was found for this session.";
+  }
+
+  return recentTurns
+    .map((turn) => {
+      const payloadSummary = Object.keys(turn.finalPayload).length > 0
+        ? ` payload=${JSON.stringify(turn.finalPayload)}`
+        : "";
+      return `[${turn.createdAt}] User: ${turn.transcript} | Assistant: ${turn.finalReplyText} | action=${turn.finalCommandName}${payloadSummary}`;
+    })
+    .join(" || ");
+}
+
+function describeToolOutcomesForPrompt(toolOutcomes: AgentToolOutcome[]): string {
+  if (toolOutcomes.length === 0) {
+    return "No tools have been used yet in this turn.";
+  }
+
+  return toolOutcomes
+    .map((outcome) => JSON.stringify({
+      tool: outcome.name,
+      ok: outcome.ok,
+      arguments: outcome.arguments,
+      result: outcome.result
+    }))
+    .join(" || ");
+}
+
+function describeExternalLiveTvStateForPrompt(liveTvState: ExternalLiveTvState | null): string {
+  if (!liveTvState) {
+    return "No persisted external live TV state.";
+  }
+
+  return `${liveTvState.channelLabel} via ${liveTvState.provider} at ${liveTvState.tunedAt}. Active: ${liveTvState.isActive ? "yes" : "no"}.`;
 }
 
 function parseVoiceCommandName(value: unknown): VoiceTurnResponse["action"] {
@@ -2078,6 +2575,84 @@ function parseLiveTvTunePayload(payload: Record<string, unknown>): LiveTvTuneReq
     provider: parseLiveTvProvider(payload.provider),
     channel
   };
+}
+
+function normalizeRuntimeLogPath(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function resolveRuntimeLogTrimIntervalMs(): number {
+  const raw = Number(process.env.CLAWTV_RUNTIME_LOG_TRIM_INTERVAL_MINUTES ?? 15);
+
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 15 * 60 * 1000;
+  }
+
+  return Math.round(raw * 60 * 1000);
+}
+
+function resolveRuntimeLogMaxBytes(): number {
+  const raw = Number(process.env.CLAWTV_RUNTIME_LOG_MAX_BYTES ?? 1_000_000);
+
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 1_000_000;
+  }
+
+  return Math.round(raw);
+}
+
+function trimRuntimeLogsIfNeeded(): void {
+  const maxBytes = resolveRuntimeLogMaxBytes();
+  trimRuntimeLogIfNeeded(runtimeStdoutLogPath, maxBytes);
+  trimRuntimeLogIfNeeded(runtimeStderrLogPath, maxBytes);
+}
+
+function trimRuntimeLogIfNeeded(logPath: string | null, maxBytes: number): void {
+  if (!logPath || !existsSync(logPath)) {
+    return;
+  }
+
+  try {
+    const stats = statSync(logPath);
+    if (stats.size <= maxBytes) {
+      return;
+    }
+
+    const archivePath = `${logPath}.${new Date().toISOString().replace(/[:]/gu, "-")}`;
+    copyFileSync(logPath, archivePath);
+    truncateSync(logPath, 0);
+    pruneArchivedRuntimeLogs(logPath);
+  } catch (error) {
+    console.warn("Unable to trim runtime log", logPath, error);
+  }
+}
+
+function pruneArchivedRuntimeLogs(baseLogPath: string): void {
+  try {
+    const directory = dirname(baseLogPath);
+    const fileName = baseLogPath.split("/").at(-1);
+
+    if (!fileName) {
+      return;
+    }
+
+    const archivedLogs = readdirSync(directory)
+      .filter((entry) => entry.startsWith(`${fileName}.`))
+      .sort()
+      .reverse()
+      .slice(10);
+
+    archivedLogs.forEach((entry) => {
+      try {
+        unlinkSync(join(directory, entry));
+      } catch {
+        // Ignore prune issues; archived logs are best-effort.
+      }
+    });
+  } catch {
+    // Ignore prune issues; archived logs are best-effort.
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

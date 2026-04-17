@@ -20,6 +20,7 @@ import type {
   CommandName,
   CommandResult,
   EpisodeRecommendation,
+  ExternalLiveTvState,
   MediaItemSummary,
   PlaybackMediaItem,
   PlaybackSnapshot,
@@ -111,6 +112,7 @@ export interface RecordSyncRunInput {
   startedAt?: string;
   finishedAt?: string | null;
   errorMessage?: string | null;
+  details?: Record<string, unknown> | null;
 }
 
 export interface ClawTvDatabaseOptions {
@@ -235,6 +237,19 @@ interface MovieSummaryRow {
   year: number | null;
 }
 
+interface ExternalLiveTvStateRow {
+  session_id: string;
+  provider: string;
+  channel_key: string;
+  channel_label: string;
+  launched_url: string | null;
+  tuned_at: string;
+  updated_at: string;
+  is_active: number;
+  package_name: string | null;
+  device_serial: string | null;
+}
+
 interface ResolvedShowRow {
   id: string;
   title: string;
@@ -253,6 +268,28 @@ export interface VoiceTurnLogInput {
   commandOk: boolean | null;
   commandMessage: string | null;
   matchedItemCount: number | null;
+}
+
+export interface VoiceTurnHistoryEntry {
+  sessionId: string | null;
+  transcript: string;
+  finalReplyText: string;
+  finalCommandName: string;
+  finalPayload: Record<string, unknown>;
+  commandMessage: string | null;
+  createdAt: string;
+}
+
+export interface ExternalLiveTvStateInput {
+  sessionId: string;
+  provider: ExternalLiveTvState["provider"];
+  channelKey: string;
+  channelLabel: string;
+  launchedUrl: string | null;
+  tunedAt: string;
+  packageName: string | null;
+  deviceSerial: string | null;
+  isActive: boolean;
 }
 
 export interface CatalogNetworkContext {
@@ -370,7 +407,7 @@ export class ClawTvDatabase {
 
   getLatestSyncRun(): SyncRunSummary | null {
     const row = this.db.prepare(`
-      SELECT id, mode, status, started_at, finished_at, libraries_synced, media_items_synced, error_message
+      SELECT id, mode, status, started_at, finished_at, libraries_synced, media_items_synced, error_message, details_json
       FROM sync_runs
       ORDER BY started_at DESC
       LIMIT 1
@@ -383,28 +420,19 @@ export class ClawTvDatabase {
       libraries_synced: number;
       media_items_synced: number;
       error_message: string | null;
+      details_json: string | null;
     } | undefined;
 
     if (!row) {
       return null;
     }
 
-    return {
-      id: row.id,
-      mode: row.mode,
-      status: row.status,
-      startedAt: row.started_at,
-      finishedAt: row.finished_at,
-      durationMs: calculateDurationMs(row.started_at, row.finished_at),
-      librariesSynced: row.libraries_synced,
-      mediaItemsSynced: row.media_items_synced,
-      errorMessage: row.error_message
-    };
+    return mapSyncRunRow(row);
   }
 
   getLatestSuccessfulSyncRun(): SyncRunSummary | null {
     const row = this.db.prepare(`
-      SELECT id, mode, status, started_at, finished_at, libraries_synced, media_items_synced, error_message
+      SELECT id, mode, status, started_at, finished_at, libraries_synced, media_items_synced, error_message, details_json
       FROM sync_runs
       WHERE status = 'success'
       ORDER BY started_at DESC
@@ -418,23 +446,40 @@ export class ClawTvDatabase {
       libraries_synced: number;
       media_items_synced: number;
       error_message: string | null;
+      details_json: string | null;
     } | undefined;
 
     if (!row) {
       return null;
     }
 
-    return {
-      id: row.id,
-      mode: row.mode,
-      status: row.status,
-      startedAt: row.started_at,
-      finishedAt: row.finished_at,
-      durationMs: calculateDurationMs(row.started_at, row.finished_at),
-      librariesSynced: row.libraries_synced,
-      mediaItemsSynced: row.media_items_synced,
-      errorMessage: row.error_message
-    };
+    return mapSyncRunRow(row);
+  }
+
+  getLatestFailedSyncRun(): SyncRunSummary | null {
+    const row = this.db.prepare(`
+      SELECT id, mode, status, started_at, finished_at, libraries_synced, media_items_synced, error_message, details_json
+      FROM sync_runs
+      WHERE status = 'failed'
+      ORDER BY started_at DESC
+      LIMIT 1
+    `).get() as {
+      id: string;
+      mode: SyncMode;
+      status: SyncStatus;
+      started_at: string;
+      finished_at: string | null;
+      libraries_synced: number;
+      media_items_synced: number;
+      error_message: string | null;
+      details_json: string | null;
+    } | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    return mapSyncRunRow(row);
   }
 
   getPlaybackSnapshot(sessionId?: string | null): PlaybackSnapshot {
@@ -453,6 +498,7 @@ export class ClawTvDatabase {
       currentQueuePosition: null,
       currentItem: null,
       context: null,
+      externalLiveTv: null,
       streamPath: null,
       diagnostics: null
     };
@@ -561,6 +607,7 @@ export class ClawTvDatabase {
         currentQueuePosition: null,
         currentItem: null,
         context: null,
+        externalLiveTv: null,
         streamPath: null,
         diagnostics: null
       };
@@ -615,6 +662,7 @@ export class ClawTvDatabase {
             remainingSeasonsInShow: row.remaining_seasons_in_show
           }
         : null,
+      externalLiveTv: null,
       streamPath: null,
       diagnostics: null
     };
@@ -1551,6 +1599,7 @@ export class ClawTvDatabase {
         mediaItemsSynced: syncRun.mediaItemsSynced,
         errorMessage: syncRun.errorMessage ?? null,
         detailsJson: JSON.stringify({
+          ...(syncRun.details ?? {}),
           libraries: payload.libraries.length,
           mediaItems: sanitizedMediaItems.length,
           collections: filteredCollections.length,
@@ -1846,7 +1895,10 @@ export class ClawTvDatabase {
       librariesSynced: syncRun.librariesSynced,
       mediaItemsSynced: syncRun.mediaItemsSynced,
       errorMessage: syncRun.errorMessage ?? null,
-      detailsJson: JSON.stringify({ failed: true })
+      detailsJson: JSON.stringify({
+        failed: true,
+        ...(syncRun.details ?? {})
+      })
     });
 
     return this.getLatestSyncRun()!;
@@ -1900,6 +1952,154 @@ export class ClawTvDatabase {
       commandMessage: input.commandMessage,
       matchedItemCount: input.matchedItemCount,
       createdAt: new Date().toISOString()
+    });
+  }
+
+  listRecentVoiceTurns(limit = 6, sessionId?: string | null): VoiceTurnHistoryEntry[] {
+    const rows = (sessionId
+      ? this.db.prepare(`
+          SELECT session_id, transcript, final_reply_text, final_command_name, final_payload_json, command_message, created_at
+          FROM voice_turn_log
+          WHERE session_id = :sessionId
+          ORDER BY created_at DESC
+          LIMIT :limit
+        `).all({ sessionId, limit })
+      : this.db.prepare(`
+          SELECT session_id, transcript, final_reply_text, final_command_name, final_payload_json, command_message, created_at
+          FROM voice_turn_log
+          ORDER BY created_at DESC
+          LIMIT :limit
+        `).all({ limit })) as unknown as Array<{
+          session_id: string | null;
+          transcript: string;
+          final_reply_text: string;
+          final_command_name: string;
+          final_payload_json: string;
+          command_message: string | null;
+          created_at: string;
+        }>;
+
+    return rows
+      .reverse()
+      .map((row) => ({
+        sessionId: row.session_id,
+        transcript: row.transcript,
+        finalReplyText: row.final_reply_text,
+        finalCommandName: row.final_command_name,
+        finalPayload: safeParseJsonObject(row.final_payload_json),
+        commandMessage: row.command_message,
+        createdAt: row.created_at
+      }));
+  }
+
+  getExternalLiveTvState(sessionId?: string | null): ExternalLiveTvState | null {
+    const targetSessionId = sessionId ?? this.getTargetSession(sessionId)?.id ?? null;
+    if (!targetSessionId) {
+      return null;
+    }
+
+    const row = this.db.prepare(`
+      SELECT
+        session_id,
+        provider,
+        channel_key,
+        channel_label,
+        launched_url,
+        tuned_at,
+        updated_at,
+        is_active,
+        package_name,
+        device_serial
+      FROM external_live_tv_state
+      WHERE session_id = :sessionId
+      LIMIT 1
+    `).get({ sessionId: targetSessionId }) as unknown as ExternalLiveTvStateRow | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      sessionId: row.session_id,
+      provider: row.provider === "youtube-tv" ? "youtube-tv" : "youtube-tv",
+      channelKey: row.channel_key,
+      channelLabel: row.channel_label,
+      launchedUrl: row.launched_url,
+      tunedAt: row.tuned_at,
+      updatedAt: row.updated_at,
+      isActive: Boolean(row.is_active),
+      packageName: row.package_name,
+      deviceSerial: row.device_serial
+    };
+  }
+
+  setExternalLiveTvState(input: ExternalLiveTvStateInput): ExternalLiveTvState {
+    const updatedAt = new Date().toISOString();
+
+    this.db.prepare(`
+      INSERT INTO external_live_tv_state (
+        session_id,
+        provider,
+        channel_key,
+        channel_label,
+        launched_url,
+        tuned_at,
+        updated_at,
+        is_active,
+        package_name,
+        device_serial
+      ) VALUES (
+        :sessionId,
+        :provider,
+        :channelKey,
+        :channelLabel,
+        :launchedUrl,
+        :tunedAt,
+        :updatedAt,
+        :isActive,
+        :packageName,
+        :deviceSerial
+      )
+      ON CONFLICT(session_id) DO UPDATE SET
+        provider = excluded.provider,
+        channel_key = excluded.channel_key,
+        channel_label = excluded.channel_label,
+        launched_url = excluded.launched_url,
+        tuned_at = excluded.tuned_at,
+        updated_at = excluded.updated_at,
+        is_active = excluded.is_active,
+        package_name = excluded.package_name,
+        device_serial = excluded.device_serial
+    `).run({
+      sessionId: input.sessionId,
+      provider: input.provider,
+      channelKey: input.channelKey,
+      channelLabel: input.channelLabel,
+      launchedUrl: input.launchedUrl,
+      tunedAt: input.tunedAt,
+      updatedAt,
+      isActive: input.isActive ? 1 : 0,
+      packageName: input.packageName,
+      deviceSerial: input.deviceSerial
+    });
+
+    return this.getExternalLiveTvState(input.sessionId)!;
+  }
+
+  clearExternalLiveTvState(sessionId?: string | null): void {
+    const targetSessionId = sessionId ?? this.getTargetSession(sessionId)?.id ?? null;
+    if (!targetSessionId) {
+      return;
+    }
+
+    this.db.prepare(`
+      UPDATE external_live_tv_state
+      SET is_active = 0,
+          updated_at = :updatedAt
+      WHERE session_id = :sessionId
+    `).run({
+      sessionId: targetSessionId,
+      updatedAt: new Date().toISOString()
     });
   }
 
@@ -2946,6 +3146,48 @@ function calculateDurationMs(startedAt: string, finishedAt: string | null): numb
   }
 
   return Math.max(0, finishedMs - startedMs);
+}
+
+function mapSyncRunRow(row: {
+  id: string;
+  mode: SyncMode;
+  status: SyncStatus;
+  started_at: string;
+  finished_at: string | null;
+  libraries_synced: number;
+  media_items_synced: number;
+  error_message: string | null;
+  details_json: string | null;
+}): SyncRunSummary {
+  const details = safeParseJsonObject(row.details_json);
+
+  return {
+    id: row.id,
+    mode: row.mode,
+    status: row.status,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    durationMs: calculateDurationMs(row.started_at, row.finished_at),
+    librariesSynced: row.libraries_synced,
+    mediaItemsSynced: row.media_items_synced,
+    errorMessage: row.error_message,
+    details: Object.keys(details).length > 0 ? details : null
+  };
+}
+
+function safeParseJsonObject(value: string | null): Record<string, unknown> {
+  if (!value) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function formatPlaybackPosition(positionMs: number): string {

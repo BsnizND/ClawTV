@@ -84,6 +84,19 @@ export interface PlaybackContext {
   remainingSeasonsInShow: number | null;
 }
 
+export interface ExternalLiveTvState {
+  sessionId: string;
+  provider: LiveTvProvider;
+  channelKey: string;
+  channelLabel: string;
+  launchedUrl: string | null;
+  tunedAt: string;
+  updatedAt: string;
+  isActive: boolean;
+  packageName: string | null;
+  deviceSerial: string | null;
+}
+
 export interface VoiceConfig {
   enabled: boolean;
   backend: VoiceBackendMode;
@@ -113,6 +126,7 @@ export interface PlaybackSnapshot {
   currentQueuePosition: number | null;
   currentItem: PlaybackMediaItem | null;
   context: PlaybackContext | null;
+  externalLiveTv: ExternalLiveTvState | null;
   streamPath: string | null;
   diagnostics: PlaybackDiagnostics | null;
 }
@@ -240,6 +254,23 @@ export interface SyncRunSummary {
   librariesSynced: number;
   mediaItemsSynced: number;
   errorMessage: string | null;
+  details: Record<string, unknown> | null;
+}
+
+export interface SyncStatusResponse {
+  latestRun: SyncRunSummary | null;
+  latestSuccessfulRun: SyncRunSummary | null;
+  latestFailedRun: SyncRunSummary | null;
+}
+
+export interface VoiceHealthResponse {
+  ok: boolean;
+  assistantId: string;
+  assistantName: string;
+  checkedAt: string;
+  durationMs: number | null;
+  cached: boolean;
+  error: string | null;
 }
 
 export interface SyncRequest {
