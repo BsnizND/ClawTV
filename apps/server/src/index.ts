@@ -2105,12 +2105,44 @@ async function runOpenClawVoiceTurn(input: {
   }
 
   if (!lastRawText) {
-    return null;
+    const fallbackRawText = await runOpenClawPlainPrompt({
+      prompt: buildOpenClawFinalOnlyPrompt({
+        ...input,
+        networkContext,
+        recentTurns
+      }),
+      agentId: input.voiceConfig.assistantId,
+      timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
+      thinking: process.env.CLAWTV_OPENCLAW_THINKING?.trim()
+    });
+    const fallback = fallbackRawText ? extractOpenClawReplyFromRawText(fallbackRawText) : null;
+    return fallback ? {
+      ...fallback,
+      executedAction
+    } : null;
   }
 
   const fallback = extractOpenClawReplyFromRawText(lastRawText);
-  return fallback ? {
-    ...fallback,
+  if (fallback) {
+    return {
+      ...fallback,
+      executedAction
+    };
+  }
+
+  const fallbackRawText = await runOpenClawPlainPrompt({
+    prompt: buildOpenClawFinalOnlyPrompt({
+      ...input,
+      networkContext,
+      recentTurns
+    }),
+    agentId: input.voiceConfig.assistantId,
+    timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
+    thinking: process.env.CLAWTV_OPENCLAW_THINKING?.trim()
+  });
+  const finalFallback = fallbackRawText ? extractOpenClawReplyFromRawText(fallbackRawText) : null;
+  return finalFallback ? {
+    ...finalFallback,
     executedAction
   } : null;
 }
@@ -2221,6 +2253,32 @@ function describePlaybackContextForPrompt(snapshot: PlaybackSnapshot): string {
   ].filter((value): value is string => Boolean(value));
 
   return parts.join(" | ");
+}
+
+function buildOpenClawFinalOnlyPrompt(input: {
+  transcript: string;
+  playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
+  voiceConfig: VoiceConfig;
+  networkContext?: ReturnType<typeof db.findNetworkContextForTranscript>;
+  recentTurns: ReturnType<typeof db.listRecentVoiceTurns>;
+}): string {
+  return [
+    `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
+    "Return JSON only.",
+    "Schema: {\"replyText\":\"string\",\"commandName\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"expectsReply\":boolean}",
+    "Keep the reply warm, concise, and direct.",
+    "Use the supplied state and recent conversation to resolve follow-ups like yes, the other one, switch to it, and go back.",
+    "If the user explicitly asks to switch to a configured YouTube TV channel and you are confident which one they mean, use commandName live-tv-tune.",
+    "If external live TV is active, do not pretend ClawTV can pause or resume the YouTube TV app itself.",
+    `Configured live TV channels: ${describeLiveTvChannelsForPrompt()}`,
+    `Current playback context: ${describePlaybackContextForPrompt(input.playback)}`,
+    `Current external live TV state: ${describeExternalLiveTvStateForPrompt(input.playback.externalLiveTv)}`,
+    `Recent conversation context: ${describeRecentVoiceTurnsForPrompt(input.recentTurns)}`,
+    input.networkContext
+      ? `Possible local Plex network context: ${input.networkContext.network} with shows ${describeNetworkContextForPrompt(input.networkContext)}.`
+      : "No special local Plex network context was found for this turn.",
+    `User said: ${input.transcript}`
+  ].join(" ");
 }
 
 function extractOpenClawReplyFromRawText(rawText: string): {
@@ -2505,6 +2563,46 @@ async function runOpenClawJsonPrompt(input: {
     return extractOpenClawRawText(stdout);
   } catch (error) {
     console.warn("OpenClaw voice handoff failed", error);
+    return null;
+  }
+}
+
+async function runOpenClawPlainPrompt(input: {
+  prompt: string;
+  agentId: string;
+  timeoutSeconds: number;
+  thinking?: string | null;
+}): Promise<string | null> {
+  const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
+  const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.agentId || "main";
+  const timeoutSeconds = Number.isFinite(input.timeoutSeconds) ? input.timeoutSeconds : 90;
+  const args = [
+    "agent",
+    "--agent",
+    agentId,
+    "--message",
+    input.prompt,
+    "--timeout",
+    String(timeoutSeconds)
+  ];
+
+  if (input.thinking) {
+    args.splice(5, 0, "--thinking", input.thinking);
+  }
+
+  try {
+    const { stdout } = await execFileAsync(command, args, {
+      env: {
+        ...process.env,
+        PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
+      },
+      maxBuffer: 2 * 1024 * 1024
+    });
+
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch (error) {
+    console.warn("OpenClaw plain-text fallback failed", error);
     return null;
   }
 }
