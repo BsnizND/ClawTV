@@ -245,10 +245,14 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "GET" && routePath === "/api/health/runtime") {
-    const activeProbe = requestUrl.searchParams.get("probe") !== "cached";
+    const probeMode = requestUrl.searchParams.get("probe");
+    const activeProbe = probeMode !== "cached";
     const voiceConfig = await buildVoiceConfig();
     const voice = voiceConfig.enabled
-      ? await probeVoiceAssistantHealth(voiceConfig, { force: activeProbe })
+      ? await probeVoiceAssistantHealth(voiceConfig, {
+          force: activeProbe,
+          cachedOnly: probeMode === "cached"
+        })
       : {
           ok: false,
           assistantId: voiceConfig.assistantId,
@@ -957,12 +961,25 @@ async function probeVoiceAssistantHealth(
   voiceConfig: VoiceConfig,
   input?: {
     force?: boolean;
+    cachedOnly?: boolean;
   }
 ): Promise<VoiceHealthResponse> {
   if (!input?.force && voiceHealthProbeCache && voiceHealthProbeCache.expiresAt > Date.now()) {
     return {
       ...voiceHealthProbeCache.result,
       cached: true
+    };
+  }
+
+  if (input?.cachedOnly) {
+    return {
+      ok: false,
+      assistantId: voiceConfig.assistantId,
+      assistantName: voiceConfig.assistantName,
+      checkedAt: new Date().toISOString(),
+      durationMs: null,
+      cached: true,
+      error: "No cached voice probe is available yet."
     };
   }
 
@@ -1531,7 +1548,7 @@ async function launchLiveTvIntent(input: {
     await runAdbCommand(input.adbPath, launchArgs);
   } catch (error) {
     const message = error instanceof Error ? error.message : "ADB launch failed.";
-    const retryable = /device offline|cannot connect to daemon|adb server didn't ack/iu.test(message);
+    const retryable = /device offline|device '.*' not found|cannot connect to daemon|adb server didn't ack/iu.test(message);
 
     if (!retryable) {
       throw error;
