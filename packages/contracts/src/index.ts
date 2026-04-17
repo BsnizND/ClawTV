@@ -165,6 +165,19 @@ export interface LiveTvTuneResponse {
   clawTvPlaybackStopped: boolean;
 }
 
+export interface LiveTvChannelSummary {
+  key: string;
+  label: string;
+  aliases: string[];
+  provider: LiveTvProvider;
+  urlConfigured: boolean;
+}
+
+export interface LiveTvChannelsResponse {
+  provider: LiveTvProvider;
+  channels: LiveTvChannelSummary[];
+}
+
 export interface MediaLookupRequest {
   title?: string;
   series?: string;

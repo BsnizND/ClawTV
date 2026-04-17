@@ -12,6 +12,7 @@ import type {
   CheckNewContentResponse,
   CommandName,
   CommandResult,
+  LiveTvChannelsResponse,
   LiveTvTuneRequest,
   LiveTvTuneResponse,
   PlaybackContext,
@@ -63,6 +64,12 @@ async function main(): Promise<void> {
     if (rawCommand === "voice-config") {
       const config = await getJson<VoiceConfig>("api/voice/config");
       console.log(JSON.stringify(config, null, 2));
+      return;
+    }
+
+    if (rawCommand === "live-tv-channels") {
+      const channels = await getJson<LiveTvChannelsResponse>("api/live-tv/channels");
+      console.log(JSON.stringify(channels, null, 2));
       return;
     }
 
@@ -235,6 +242,7 @@ Usage:
   clawtv sessions
   clawtv now-playing
   clawtv now-playing-summary
+  clawtv live-tv-channels
   clawtv voice-config
   clawtv voice-turn --text "how long is left in this?"
   clawtv search --query "john oliver" [--type episode]

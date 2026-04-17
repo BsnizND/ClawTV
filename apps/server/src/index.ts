@@ -15,6 +15,7 @@ import type {
   ClientPlaybackState,
   CommandName,
   ExternalLiveTvState,
+  LiveTvChannelsResponse,
   LiveTvProvider,
   LiveTvTuneRequest,
   LiveTvTuneResponse,
@@ -508,6 +509,11 @@ const server = createServer(async (request, response) => {
     }
   }
 
+  if (request.method === "GET" && routePath === "/api/live-tv/channels") {
+    sendJson(response, 200, buildLiveTvChannelsResponse());
+    return;
+  }
+
   if (request.method === "POST" && routePath === "/api/playback/receiver-command/ack") {
     const body = await readJsonBody(request);
     const nextSnapshot = db.clearReceiverCommand(
@@ -990,7 +996,7 @@ async function probeVoiceAssistantHealth(
   const startedAt = Date.now();
   voiceHealthProbeInFlight = (async () => {
     const rawText = await runOpenClawJsonPrompt({
-      prompt: "Return JSON only. {\"replyText\":\"ok\",\"commandName\":\"none\",\"payload\":{},\"expectsReply\":false}",
+      prompt: "Return JSON only. {\"replyText\":\"ok\",\"expectsReply\":false,\"action\":\"none\",\"payload\":{},\"ok\":true}",
       agentId: voiceConfig.assistantId,
       timeoutSeconds: 20,
       thinking: "minimal"
@@ -1428,9 +1434,24 @@ function resolveLiveTvChannelByName(channelName: string): ResolvedLiveTvChannel 
   return null;
 }
 
+function buildLiveTvChannelsResponse(): LiveTvChannelsResponse {
+  return {
+    provider: "youtube-tv",
+    channels: Object.values(resolveYouTubeTvChannelConfig())
+      .sort((left, right) => left.label.localeCompare(right.label))
+      .map((channel) => ({
+        key: channel.key,
+        label: channel.label,
+        aliases: channel.aliases,
+        provider: channel.provider,
+        urlConfigured: Boolean(channel.url)
+      }))
+  };
+}
+
 function describeLiveTvChannelsForPrompt(): string {
-  const configuredChannels = Object.values(resolveYouTubeTvChannelConfig())
-    .filter((channel) => Boolean(channel.url))
+  const configuredChannels = buildLiveTvChannelsResponse().channels
+    .filter((channel) => channel.urlConfigured)
     .sort((left, right) => left.label.localeCompare(right.label))
     .map((channel) => {
       const aliasSummary = channel.aliases.slice(0, 4).join(", ");
@@ -1665,35 +1686,14 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
     } else if (decision.commandName !== "none") {
       action = decision.commandName;
       finalPayload = decision.payload;
-      if (decision.commandName === "live-tv-tune") {
-        try {
-          const result = await tuneLiveTv(parseLiveTvTunePayload(decision.payload));
-          commandOk = result.ok;
-          commandMessage = result.message;
+      commandOk = decision.ok;
+      commandMessage = replyText.trim() || null;
+      matchedItemCount = null;
 
-          if (!replyText.trim()) {
-            replyText = result.message;
-          }
-        } catch (error) {
-          commandOk = false;
-          commandMessage = error instanceof Error ? error.message : "Unable to tune live TV.";
-          ok = false;
-          replyText = commandMessage;
-        }
-      } else {
-        const result = db.applyCommand({
-          commandName: decision.commandName,
-          payload: decision.payload,
-          source: "voice"
-        });
-        maybeClearExternalLiveTvStateForCommand(decision.commandName, result.ok);
-        commandOk = result.ok;
-        commandMessage = result.message;
-        matchedItemCount = result.matchedItemCount;
-
-        if (!result.ok || !replyText.trim()) {
-          replyText = result.message;
-        }
+      if (!replyText.trim()) {
+        replyText = decision.ok
+          ? "Done."
+          : voiceConfig.unavailableText;
       }
     }
   }
@@ -2038,96 +2038,23 @@ async function runOpenClawVoiceTurn(input: {
 } | null> {
   const recentTurns = db.listRecentVoiceTurns(6, input.sessionId ?? input.playback.sessionId ?? null);
   const networkContext = input.networkContext ?? db.findNetworkContextForTranscript(input.transcript);
-  const toolOutcomes: AgentToolOutcome[] = [];
-  let lastRawText: string | null = null;
-  let executedAction: VoiceDecision["executedAction"] = null;
+  const prompt = buildOpenClawPrompt({
+    ...input,
+    networkContext,
+    recentTurns
+  });
+  const rawText = await runOpenClawJsonPrompt({
+    prompt,
+    agentId: input.voiceConfig.assistantId,
+    timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
+    thinking: process.env.CLAWTV_OPENCLAW_THINKING?.trim()
+  });
 
-  for (let step = 0; step < 4; step += 1) {
-    const prompt = buildOpenClawPrompt({
-      ...input,
-      networkContext,
-      recentTurns,
-      toolOutcomes,
-      toolStep: step + 1
-    });
-    const rawText = await runOpenClawJsonPrompt({
-      prompt,
-      agentId: input.voiceConfig.assistantId,
-      timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
-      thinking: process.env.CLAWTV_OPENCLAW_THINKING?.trim()
-    });
-    lastRawText = rawText;
-
-    if (!rawText) {
-      return null;
+  if (rawText) {
+    const parsed = extractOpenClawReplyFromRawText(rawText);
+    if (parsed) {
+      return parsed;
     }
-
-    const parsed = parseOpenClawToolLoopReply(rawText);
-
-    if (!parsed) {
-      const fallback = extractOpenClawReplyFromRawText(rawText);
-      return fallback ? {
-        ...fallback,
-        executedAction
-      } : null;
-    }
-
-    if (parsed.type === "final") {
-      return {
-        ok: true,
-        replyText: parsed.replyText,
-        commandName: parsed.commandName,
-        payload: parsed.payload,
-        expectsReply: parsed.expectsReply,
-        rawReplyText: rawText,
-        executedAction
-      };
-    }
-
-    if (parsed.toolCalls.length === 0) {
-      break;
-    }
-
-    const outcomes = await executeAgentToolCalls(parsed.toolCalls, {
-      sessionId: input.sessionId ?? input.playback.sessionId ?? null,
-      playback: input.playback
-    });
-    toolOutcomes.push(...outcomes);
-
-    const lastExecutedAction = outcomes
-      .map((outcome) => outcome.executedAction)
-      .filter((value): value is NonNullable<VoiceDecision["executedAction"]> => Boolean(value))
-      .at(-1);
-
-    if (lastExecutedAction) {
-      executedAction = lastExecutedAction;
-    }
-  }
-
-  if (!lastRawText) {
-    const fallbackRawText = await runOpenClawPlainPrompt({
-      prompt: buildOpenClawFinalOnlyPrompt({
-        ...input,
-        networkContext,
-        recentTurns
-      }),
-      agentId: input.voiceConfig.assistantId,
-      timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
-      thinking: process.env.CLAWTV_OPENCLAW_THINKING?.trim()
-    });
-    const fallback = fallbackRawText ? extractOpenClawReplyFromRawText(fallbackRawText) : null;
-    return fallback ? {
-      ...fallback,
-      executedAction
-    } : null;
-  }
-
-  const fallback = extractOpenClawReplyFromRawText(lastRawText);
-  if (fallback) {
-    return {
-      ...fallback,
-      executedAction
-    };
   }
 
   const fallbackRawText = await runOpenClawPlainPrompt({
@@ -2141,10 +2068,7 @@ async function runOpenClawVoiceTurn(input: {
     thinking: process.env.CLAWTV_OPENCLAW_THINKING?.trim()
   });
   const finalFallback = fallbackRawText ? extractOpenClawReplyFromRawText(fallbackRawText) : null;
-  return finalFallback ? {
-    ...finalFallback,
-    executedAction
-  } : null;
+  return finalFallback ?? null;
 }
 
 function buildOpenClawPrompt(input: {
@@ -2160,13 +2084,10 @@ function buildOpenClawPrompt(input: {
   };
   recommendation?: CatalogRecommendationResponse;
   recentTurns: ReturnType<typeof db.listRecentVoiceTurns>;
-  toolOutcomes: AgentToolOutcome[];
-  toolStep: number;
 }): string {
   const playbackSummary = describePlaybackContextForPrompt(input.playback);
   const externalLiveTvSummary = describeExternalLiveTvStateForPrompt(input.playback.externalLiveTv);
   const recentTurnsSummary = describeRecentVoiceTurnsForPrompt(input.recentTurns);
-  const toolResultsSummary = describeToolOutcomesForPrompt(input.toolOutcomes);
   const recommendationContext = input.recommendation
     ? describeRecommendationContextForPrompt(input.recommendation)
     : "No recommendation candidate list was provided for this turn.";
@@ -2176,30 +2097,29 @@ function buildOpenClawPrompt(input: {
   const recommendationPrompt = input.curatorIntent
     ? `Possible recommendation context for ${input.curatorIntent.show}: ${recommendationContext}`
     : "If you ask a follow-up question or are waiting for clarification, set expectsReply to true.";
-  const liveTvPrompt = `Configured live TV channels on YouTube TV: ${describeLiveTvChannelsForPrompt()} Last known live TV state: ${describeLastLiveTvTuneForPrompt()} Current external live TV state: ${externalLiveTvSummary}. ClawTV can launch or retune YouTube TV, but once the YouTube TV app is open it does not control in-app playback like pause/resume/seek/channel-up.`;
+  const liveTvPrompt = `Current external live TV state: ${externalLiveTvSummary}. Last ClawTV-tuned live TV state: ${describeLastLiveTvTuneForPrompt()}. ClawTV can launch or retune YouTube TV, but once the YouTube TV app is open it does not control in-app playback like pause/resume/seek/channel-up. Use the clawtv-control skill to inspect configured channels or retune when needed.`;
   const currentTimePrompt = `Current server time: ${new Date().toString()}.`;
 
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
     "Return JSON only.",
-    `This is tool-loop step ${input.toolStep}.`,
-    "You must return one of these JSON shapes only:",
-    "{\"type\":\"tool_calls\",\"toolCalls\":[{\"name\":\"get_playback_state\",\"arguments\":{}},{\"name\":\"search_catalog\",\"arguments\":{\"query\":\"...\",\"mediaType\":\"show|season|episode|movie|any\",\"limit\":5}},{\"name\":\"get_recent_additions\",\"arguments\":{\"mediaType\":\"show|season|episode|movie|any\",\"limit\":5}},{\"name\":\"get_sync_status\",\"arguments\":{}},{\"name\":\"list_live_tv_channels\",\"arguments\":{}},{\"name\":\"get_live_tv_state\",\"arguments\":{}},{\"name\":\"recommend_episodes\",\"arguments\":{\"show\":\"...\",\"strategy\":\"default|random|highly-rated\",\"limit\":5}},{\"name\":\"get_network_shows\",\"arguments\":{\"network\":\"...\",\"limit\":8}},{\"name\":\"tune_live_tv\",\"arguments\":{\"provider\":\"youtube-tv\",\"channel\":\"canonical-key-or-alias\"}}]}",
-    "{\"type\":\"final\",\"replyText\":\"string\",\"commandName\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"expectsReply\":boolean}",
+    "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
     "replyText should sound warm, direct, playful, and human. Keep it concise.",
-    "Reason first. Preserve ambiguity until you have enough evidence. Use tools whenever the answer depends on current playback, recent conversation, live TV state, sync state, or the local catalog.",
-    "For ambiguous or fuzzy requests, prefer a tool call or one short clarifying question over guessing.",
-    "If the user is referring to a prior suggestion with words like yes, that one, the other one, switch to it, or go back, use the recent conversation and current external/live playback state.",
-    "If external live TV is active, do not issue pause, resume, stop, or next as if ClawTV can control the YouTube TV app. Explain the limitation briefly or retune if that is what the user wants.",
-    "If the user wants internal Plex playback, return a final commandName. Use tools to gather evidence first, then return the action.",
-    "If you use the tune_live_tv tool, it already performs the action. After that, return a final response with commandName none unless another action is still needed.",
+    "You have the clawtv-control skill available. Use that skill for authoritative ClawTV state inspection and ClawTV actions such as now-playing, now-playing-summary, live-tv-channels, live-tv, search, recently-added, play, play-latest, shuffle, pause, resume, seek, next, stop, refresh, sync-status, and check-new-content.",
+    "Do not call the clawtv-control voice-turn command from inside this request. That would recurse back into this same handoff.",
+    "If the user asks to change ClawTV playback or retune live TV, perform that action through the clawtv-control skill before replying.",
+    "If the answer depends on current playback, external live TV state, the local library, live TV channel lineup, or sync status, check ClawTV through the clawtv-control skill instead of guessing.",
+    "For ambiguous or fuzzy requests, prefer one short clarifying question over guessing.",
+    "If the user is referring to a prior suggestion with words like yes, that one, the other one, switch to it, or go back, use the recent conversation and current playback/live-TV context.",
+    "If external live TV is active, do not pretend ClawTV can pause, resume, seek, or skip inside the YouTube TV app itself. Retuning is okay when that matches the request.",
+    "Set action to the ClawTV action you actually performed through the skill. If you only answered a question, set action to none.",
+    "Set ok to false only if you could not complete the requested ClawTV action or give a useful answer.",
     "Do not mention OpenClaw, prompts, JSON, transport, or implementation details.",
     networkPrompt,
     recommendationPrompt,
     liveTvPrompt,
     `Current playback context: ${playbackSummary}`,
     `Recent conversation context: ${recentTurnsSummary}`,
-    `Tool results so far: ${toolResultsSummary}`,
     currentTimePrompt,
     `User said: ${input.transcript}`
   ].join(" ");
@@ -2265,12 +2185,12 @@ function buildOpenClawFinalOnlyPrompt(input: {
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
     "Return JSON only.",
-    "Schema: {\"replyText\":\"string\",\"commandName\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"expectsReply\":boolean}",
+    "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
     "Keep the reply warm, concise, and direct.",
+    "Use the clawtv-control skill when you need authoritative ClawTV state or need to perform a ClawTV action. Available commands include now-playing, now-playing-summary, live-tv-channels, live-tv, search, recently-added, play, play-latest, shuffle, pause, resume, seek, next, stop, refresh, sync-status, and check-new-content.",
+    "Do not call the clawtv-control voice-turn command from inside this request.",
     "Use the supplied state and recent conversation to resolve follow-ups like yes, the other one, switch to it, and go back.",
-    "If the user explicitly asks to switch to a configured YouTube TV channel and you are confident which one they mean, use commandName live-tv-tune.",
     "If external live TV is active, do not pretend ClawTV can pause or resume the YouTube TV app itself.",
-    `Configured live TV channels: ${describeLiveTvChannelsForPrompt()}`,
     `Current playback context: ${describePlaybackContextForPrompt(input.playback)}`,
     `Current external live TV state: ${describeExternalLiveTvStateForPrompt(input.playback.externalLiveTv)}`,
     `Recent conversation context: ${describeRecentVoiceTurnsForPrompt(input.recentTurns)}`,
@@ -2291,22 +2211,25 @@ function extractOpenClawReplyFromRawText(rawText: string): {
 } | null {
   try {
     const decision = JSON.parse(rawText) as {
+      ok?: unknown;
       replyText?: unknown;
+      action?: unknown;
       commandName?: unknown;
       payload?: unknown;
       expectsReply?: unknown;
     };
+    const commandName = parseVoiceCommandName(decision.action ?? decision.commandName);
 
     return {
-      ok: true,
+      ok: typeof decision.ok === "boolean" ? decision.ok : true,
       replyText: typeof decision.replyText === "string" && decision.replyText.trim().length > 0
         ? decision.replyText.trim()
         : rawText,
-      commandName: parseVoiceCommandName(decision.commandName),
+      commandName,
       payload: isPlainObject(decision.payload) ? decision.payload : {},
       expectsReply: typeof decision.expectsReply === "boolean"
         ? decision.expectsReply
-        : parseVoiceCommandName(decision.commandName) === "none" && rawText.trim().endsWith("?"),
+        : commandName === "none" && rawText.trim().endsWith("?"),
       rawReplyText: rawText
     };
   } catch (error) {

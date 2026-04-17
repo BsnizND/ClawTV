@@ -16,6 +16,8 @@ Use this skill for requests like:
 - How long is left in this movie or episode?
 - How many more episodes are there in this season after this one?
 - How many more seasons are there in this show after this one?
+- What live TV channels are configured?
+- Turn on ESPN2.
 - What shows do you have?
 - What collections exist?
 - Search for something in the library.
@@ -53,6 +55,12 @@ Check the current playback summary and "what's left" context:
 
 ```bash
 python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py now-playing-summary
+```
+
+List configured live TV channels:
+
+```bash
+python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py live-tv-channels
 ```
 
 Check general server status:
@@ -100,6 +108,13 @@ Run a voice turn through the ClawTV server:
 ```bash
 python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py voice-turn --text "how long is left in this?"
 python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py voice-turn --text "pause" --playback-state playing
+```
+
+Tune configured live TV:
+
+```bash
+python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py live-tv --provider youtube-tv --channel "fox news"
+python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py live-tv --provider youtube-tv --channel espn2
 ```
 
 Play by title:
@@ -164,7 +179,10 @@ python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py --repo-root /so
 ## Notes
 
 - Prefer `now-playing-summary` when the user is asking how much runtime, how many episodes, or how many seasons are left for the current item.
+- Prefer `live-tv-channels` when the user is asking what ClawTV can currently tune through YouTube TV.
+- Prefer `live-tv` when the user wants to switch to a configured live TV channel.
 - Prefer `voice-turn` when you want to exercise or debug the same server-side voice intent handling the Android TV receiver will use.
+- Do not use `voice-turn` from inside a ClawTV voice handoff that is already being handled by Kay. That would recurse back into the same path. Use direct ClawTV commands instead.
 - When `CLAWTV_VOICE_BACKEND=openclaw` is configured on the server, `voice-turn` exercises the live OpenClaw handoff path too.
 - Prefer `now-playing` or `status` first when the user is asking what is currently happening and raw JSON is useful.
 - Prefer `search`, `list-shows`, `list-collections`, or `recently-added` when the user is exploring what ClawTV already has.

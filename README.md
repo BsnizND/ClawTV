@@ -122,11 +122,13 @@ The repo ships an installable skill under `skills/clawtv-control`.
 That skill gives an OpenClaw agent a stable way to:
 
 - inspect current playback and server status
+- inspect configured live TV channels
 - answer "what's left?" questions about the currently playing movie or episode
 - exercise the same voice API the Android TV receiver now uses
 - browse the synced library
 - search titles or series
 - play, shuffle, pause, resume, seek, skip, refresh, and stop
+- tune configured YouTube TV channels through ClawTV
 
 ## Android TV
 
@@ -144,7 +146,7 @@ The repo now has a generic, configurable voice path instead of a hard-coded assi
 - Android TV captures first-pass STT with `SpeechRecognizer`
 - the receiver loads assistant config from `GET /api/voice/config`
 - voice turns post to `POST /api/voice/turn`
-- with `CLAWTV_VOICE_BACKEND=openclaw`, the server hands voice turns to an OpenClaw agent and validates the returned ClawTV command
+- with `CLAWTV_VOICE_BACKEND=openclaw`, the server hands voice turns to an OpenClaw agent, passes ClawTV context, and expects the agent to use the installed `clawtv-control` skill or other OpenClaw tools as needed before returning a compact JSON reply
 - when ElevenLabs credentials are configured, both cue audio and reply audio can be cached and streamed back to the TV instead of relying on client TTS
 - when live replies are using client TTS, cue audio URLs stay empty so the same device voice is used for snippets too
 - cue snippets inherit the live reply voice by default; only set `ELEVENLABS_CUE_*` overrides when you intentionally want a different cue voice
@@ -159,6 +161,7 @@ ClawTV now has a small MVP path for launching YouTube TV on a networked Android 
 - configure `CLAWTV_ANDROID_TV_ADB_SERIAL` with the Shield's ADB serial or `host:port`
 - ensure ADB debugging is enabled on the Shield and the server host can reach it
 - map local or custom channel names to YouTube TV watch URLs with `CLAWTV_YOUTUBE_TV_CHANNEL_URLS_JSON`
+- inspect the configured lineup with `clawtv live-tv-channels`
 - run `clawtv live-tv --provider youtube-tv --channel cnn`
 
 The server now ships with a built-in lineup for common non-local channels like `CNN`, `ESPN`, `ESPN2`, `ESPNews`, `ESPNU`, `MS NOW`, `Golf Channel`, `CNBC`, `FOX News`, and `FOX Business`. Local affiliates like `ABC`, `NBC`, `FOX`, and `PBS` stay environment-driven so each deployment can map its own market correctly.
