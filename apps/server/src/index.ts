@@ -2456,6 +2456,33 @@ async function runOpenClawJsonPrompt(input: {
   timeoutSeconds: number;
   thinking?: string | null;
 }): Promise<string | null> {
+  const stdout = await runOpenClawAgentCommand(input);
+  if (!stdout) {
+    return null;
+  }
+  return extractOpenClawRawText(stdout);
+}
+
+async function runOpenClawPlainPrompt(input: {
+  prompt: string;
+  agentId: string;
+  timeoutSeconds: number;
+  thinking?: string | null;
+}): Promise<string | null> {
+  const stdout = await runOpenClawAgentCommand(input);
+  if (!stdout) {
+    return null;
+  }
+  const trimmed = stdout.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function runOpenClawAgentCommand(input: {
+  prompt: string;
+  agentId: string;
+  timeoutSeconds: number;
+  thinking?: string | null;
+}): Promise<string | null> {
   const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
   const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.agentId || "main";
   const timeoutSeconds = Number.isFinite(input.timeoutSeconds) ? input.timeoutSeconds : 90;
@@ -2475,7 +2502,7 @@ async function runOpenClawJsonPrompt(input: {
   }
 
   try {
-    const { stdout } = await execFileAsync(command, args, {
+    const { stdout, stderr } = await execFileAsync(command, args, {
       env: {
         ...process.env,
         PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
@@ -2483,51 +2510,24 @@ async function runOpenClawJsonPrompt(input: {
       maxBuffer: 2 * 1024 * 1024
     });
 
-    return extractOpenClawRawText(stdout);
+    if (sawOpenClawGatewayFallback(stderr)) {
+      console.warn("OpenClaw gateway handoff fell back to embedded execution; failing closed.", {
+        agentId,
+        stderr: stderr.trim()
+      });
+      return null;
+    }
+
+    return stdout;
   } catch (error) {
     console.warn("OpenClaw voice handoff failed", error);
     return null;
   }
 }
 
-async function runOpenClawPlainPrompt(input: {
-  prompt: string;
-  agentId: string;
-  timeoutSeconds: number;
-  thinking?: string | null;
-}): Promise<string | null> {
-  const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
-  const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.agentId || "main";
-  const timeoutSeconds = Number.isFinite(input.timeoutSeconds) ? input.timeoutSeconds : 90;
-  const args = [
-    "agent",
-    "--agent",
-    agentId,
-    "--message",
-    input.prompt,
-    "--timeout",
-    String(timeoutSeconds)
-  ];
-
-  if (input.thinking) {
-    args.splice(5, 0, "--thinking", input.thinking);
-  }
-
-  try {
-    const { stdout } = await execFileAsync(command, args, {
-      env: {
-        ...process.env,
-        PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
-      },
-      maxBuffer: 2 * 1024 * 1024
-    });
-
-    const trimmed = stdout.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  } catch (error) {
-    console.warn("OpenClaw plain-text fallback failed", error);
-    return null;
-  }
+function sawOpenClawGatewayFallback(stderr: string | undefined): boolean {
+  const normalized = (stderr ?? "").toLowerCase();
+  return normalized.includes("gateway agent failed; falling back to embedded");
 }
 
 function extractOpenClawRawText(stdout: string): string | null {
