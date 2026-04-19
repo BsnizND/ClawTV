@@ -1641,7 +1641,7 @@ class MainActivity : AppCompatActivity() {
         private const val VOICE_TURN_TIMEOUT_MS = 120_000
         private const val VOICE_FOLLOW_UP_DELAY_MS = 850L
         private const val VOICE_FOLLOW_UP_DISMISS_MS = 450L
-        private const val VOICE_REPLY_LINGER_MS = 7_500L
+        private const val VOICE_REPLY_LINGER_MS = 1_500L
         private const val VOICE_COMPLETE_SILENCE_MS = 1_800L
         private const val VOICE_POSSIBLY_COMPLETE_SILENCE_MS = 1_300L
         private const val VOICE_MINIMUM_LISTEN_MS = 3_500L

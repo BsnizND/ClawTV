@@ -999,7 +999,7 @@ async function probeVoiceAssistantHealth(
       prompt: "Return JSON only. {\"replyText\":\"ok\",\"expectsReply\":false,\"action\":\"none\",\"payload\":{},\"ok\":true}",
       agentId: voiceConfig.assistantId,
       timeoutSeconds: 20,
-      thinking: "minimal"
+      thinking: "low"
     });
     const durationMs = Date.now() - startedAt;
     const result: VoiceHealthResponse = rawText
