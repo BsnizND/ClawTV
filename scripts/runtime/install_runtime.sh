@@ -45,7 +45,6 @@ cat > "${launch_agent_dst}" <<EOF
     <string>com.clawtv.server</string>
     <key>ProgramArguments</key>
     <array>
-      <string>/bin/bash</string>
       <string>${repo_root}/scripts/runtime/run_server.sh</string>
     </array>
     <key>WorkingDirectory</key>
