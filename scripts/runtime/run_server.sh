@@ -2,7 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-runtime_home="${CLAWTV_HOME:-${HOME}}"
+default_home="${HOME:-/Users/$(id -un)}"
+runtime_home="${CLAWTV_HOME:-${default_home}}"
 support_dir="${runtime_home}/Library/Application Support/ClawTV"
 env_file="${support_dir}/clawtv.env"
 log_root="${CLAWTV_LOG_ROOT:-/Volumes/LaCie_6big/briansnyder/logs}"
