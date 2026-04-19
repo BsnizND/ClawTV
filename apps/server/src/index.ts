@@ -1794,13 +1794,21 @@ function maybeBuildSubtitleVoiceDecision(
     return null;
   }
 
-  const wantsOn = /\b(turn|switch|put|show|enable)\b.*\b(subtitles|subtitle|captions|caption)\b/u.test(normalized)
-    || /\b(subtitles|subtitle|captions|caption)\b.*\b(on)\b/u.test(normalized)
-    || /\bwith subtitles\b/u.test(normalized);
-  const wantsOff = /\b(turn|switch|shut|disable|hide|remove)\b.*\b(subtitles|subtitle|captions|caption)\b/u.test(normalized)
-    || /\b(subtitles|subtitle|captions|caption)\b.*\b(off)\b/u.test(normalized)
-    || /\bno subtitles\b/u.test(normalized)
-    || /\bno captions\b/u.test(normalized);
+  const wantsOn = [
+    /\bturn\s+on\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\b/u,
+    /\b(?:turn|switch|put)\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\s+on\b/u,
+    /\b(?:enable|show)\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\b/u,
+    /\b(?:subtitles|subtitle|captions|caption)\s+on\b/u,
+    /\bwith\s+(?:subtitles|subtitle|captions|caption)\b/u
+  ].some((pattern) => pattern.test(normalized));
+  const wantsOff = [
+    /\bturn\s+off\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\b/u,
+    /\b(?:turn|switch|shut)\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\s+off\b/u,
+    /\b(?:disable|hide|remove)\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\b/u,
+    /\b(?:subtitles|subtitle|captions|caption)\s+off\b/u,
+    /\bno\s+(?:subtitles|subtitle|captions|caption)\b/u,
+    /\bwithout\s+(?:subtitles|subtitle|captions|caption)\b/u
+  ].some((pattern) => pattern.test(normalized));
 
   if (wantsOn && !wantsOff) {
     const commandName: CommandName = "subtitles-on";
