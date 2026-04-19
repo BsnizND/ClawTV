@@ -7,7 +7,7 @@ fun escapeBuildConfig(value: String): String {
     return value.replace("\\", "\\\\").replace("\"", "\\\"")
 }
 
-val defaultReceiverUrl = "http://clawtv.local:4390/ClawTV/"
+val defaultReceiverUrl = ""
 val configuredReceiverUrl = providers.gradleProperty("clawtvReceiverUrl").orNull ?: defaultReceiverUrl
 val configuredReceiverFallbackUrlsJson = providers.gradleProperty("clawtvReceiverFallbackUrlsJson").orNull
     ?: providers.gradleProperty("clawtvReceiverFallbackUrls").orNull

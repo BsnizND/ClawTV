@@ -23,6 +23,7 @@ import type {
   PlaybackDiagnostics,
   PlaybackDiagnosticsUpdateRequest,
   PlaybackSnapshot,
+  ReceiverClientFeature,
   VoiceConfig,
   VoiceTurnRequest,
   VoiceTurnResponse,
@@ -67,6 +68,7 @@ let voiceHealthProbeCache: {
   expiresAt: number;
 } | null = null;
 let voiceHealthProbeInFlight: Promise<VoiceHealthResponse> | null = null;
+const sessionClientFeatures = new Map<string, Set<ReceiverClientFeature>>();
 type LiveTvChannelDefinition = {
   key: string;
   label: string;
@@ -78,6 +80,18 @@ type LiveTvChannelDefinition = {
 type ResolvedLiveTvChannel = LiveTvChannelDefinition & {
   url: string | null;
 };
+
+type LiveTvLaunchPath =
+  | {
+      mode: "receiver-command";
+      sessionId: string;
+      deviceSerial: null;
+    }
+  | {
+      mode: "adb";
+      sessionId: string | null;
+      deviceSerial: string;
+    };
 
 const youTubeTvChannelCatalog = [
   {
@@ -448,18 +462,21 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && routePath === "/api/playback/state") {
     const body = (await readJsonBody(request)) as unknown as PlaybackStateUpdateRequest;
     const nextState = parseOptionalPlaybackState(body.state);
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
+    const currentItemId = typeof body.currentItemId === "string" ? body.currentItemId : body.currentItemId === null ? null : undefined;
     const nextPositionMs = typeof body.positionMs === "number" && Number.isFinite(body.positionMs)
       ? Math.max(0, Math.round(body.positionMs))
       : undefined;
+    updateSessionClientFeatures(sessionId, parseReceiverClientFeatures(body.clientFeatures));
     db.setClientPlaybackState(nextState, {
-      sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+      sessionId,
       positionMs: nextPositionMs,
-      currentItemId: typeof body.currentItemId === "string" ? body.currentItemId : body.currentItemId === null ? null : undefined
+      currentItemId
     });
     maybeClearExternalLiveTvState({
-      sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+      sessionId,
       playbackState: nextState,
-      currentItemId: typeof body.currentItemId === "string" ? body.currentItemId : body.currentItemId === null ? null : undefined
+      currentItemId
     });
 
     sendJson(response, 200, buildPlaybackSnapshot());
@@ -495,12 +512,13 @@ const server = createServer(async (request, response) => {
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to tune live TV.";
+      const configuredAdbTargets = resolveConfiguredAdbTargets();
       sendJson(response, 500, {
         ok: false,
         provider: parseLiveTvProvider(body.provider),
         channel: typeof body.channel === "string" ? body.channel.trim().toLowerCase() : "",
         message,
-        deviceSerial: process.env.CLAWTV_ANDROID_TV_ADB_SERIAL?.trim() || null,
+        deviceSerial: configuredAdbTargets[0] ?? null,
         packageName: null,
         launchedUrl: null,
         clawTvPlaybackStopped: false
@@ -1300,6 +1318,35 @@ function parsePlaybackAutoplayStatus(value: unknown): PlaybackDiagnostics["autop
     : "unknown";
 }
 
+function parseReceiverClientFeatures(value: unknown): ReceiverClientFeature[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((feature): feature is ReceiverClientFeature => feature === "launch-external-url");
+}
+
+function updateSessionClientFeatures(sessionId: string | undefined, features: ReceiverClientFeature[]): void {
+  if (!sessionId) {
+    return;
+  }
+
+  if (features.length === 0) {
+    sessionClientFeatures.delete(sessionId);
+    return;
+  }
+
+  sessionClientFeatures.set(sessionId, new Set(features));
+}
+
+function sessionSupportsClientFeature(sessionId: string | null | undefined, feature: ReceiverClientFeature): boolean {
+  if (!sessionId) {
+    return false;
+  }
+
+  return sessionClientFeatures.get(sessionId)?.has(feature) ?? false;
+}
+
 function toRoutePath(pathname: string): string {
   if (pathname === basePath || pathname === `${basePath}/`) {
     return "/";
@@ -1481,11 +1528,6 @@ async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse>
     throw new Error("A live TV channel name is required.");
   }
 
-  const deviceSerial = process.env.CLAWTV_ANDROID_TV_ADB_SERIAL?.trim();
-  if (!deviceSerial) {
-    throw new Error("CLAWTV_ANDROID_TV_ADB_SERIAL is not configured on the server.");
-  }
-
   const packageName = process.env.CLAWTV_YOUTUBE_TV_PACKAGE?.trim() || "com.google.android.youtube.tvunplugged";
   const channel = resolveLiveTvChannelByName(input.channel);
 
@@ -1496,8 +1538,10 @@ async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse>
   const shouldConnect = parseBooleanEnv(process.env.CLAWTV_ANDROID_TV_ADB_CONNECT, true);
   const adbPath = process.env.CLAWTV_ANDROID_TV_ADB_PATH?.trim() || "adb";
   let clawTvPlaybackStopped = false;
+  const playbackBefore = buildPlaybackSnapshot();
+  const activeSessionId = playbackBefore.sessionId;
 
-  if (buildPlaybackSnapshot().sessionId) {
+  if (activeSessionId) {
     const stopResult = db.applyCommand({
       commandName: "stop",
       payload: {},
@@ -1506,16 +1550,16 @@ async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse>
     clawTvPlaybackStopped = stopResult.ok;
   }
 
-  await launchLiveTvIntent({
+  const launchPath = await launchLiveTv({
+    sessionId: activeSessionId,
     adbPath,
-    deviceSerial,
     channelUrl: channel.url,
     packageName,
     shouldConnect
   });
 
   const tunedAt = new Date().toISOString();
-  const sessionId = buildPlaybackSnapshot().sessionId ?? process.env.CLAWTV_DEFAULT_SESSION_ID?.trim() ?? "primary-tv";
+  const sessionId = launchPath.sessionId ?? process.env.CLAWTV_DEFAULT_SESSION_ID?.trim() ?? "primary-tv";
   db.setExternalLiveTvState({
     sessionId,
     provider: input.provider,
@@ -1524,19 +1568,65 @@ async function tuneLiveTv(input: LiveTvTuneRequest): Promise<LiveTvTuneResponse>
     launchedUrl: channel.url,
     tunedAt,
     packageName,
-    deviceSerial,
+    deviceSerial: launchPath.deviceSerial,
     isActive: true
   });
+
+  if (launchPath.mode === "receiver-command") {
+    db.queueReceiverCommand(sessionId, "launch-external-url");
+  }
 
   return {
     ok: true,
     provider: input.provider,
     channel: channel.key,
-    message: `Opened ${channel.label} in ${input.provider}.`,
-    deviceSerial,
+    message: launchPath.mode === "receiver-command"
+      ? `Opened ${channel.label} in ${input.provider} on the active ClawTV receiver.`
+      : `Opened ${channel.label} in ${input.provider}.`,
+    deviceSerial: launchPath.deviceSerial,
     packageName,
     launchedUrl: channel.url,
     clawTvPlaybackStopped
+  };
+}
+
+async function launchLiveTv(input: {
+  sessionId: string | null;
+  adbPath: string;
+  channelUrl: string;
+  packageName: string;
+  shouldConnect: boolean;
+}): Promise<LiveTvLaunchPath> {
+  if (input.sessionId && sessionSupportsClientFeature(input.sessionId, "launch-external-url")) {
+    return {
+      mode: "receiver-command",
+      sessionId: input.sessionId,
+      deviceSerial: null
+    };
+  }
+
+  const adbTargets = resolveConfiguredAdbTargets();
+
+  if (adbTargets.length === 0) {
+    throw new Error(
+      input.sessionId
+        ? "The active receiver does not advertise external-app launch support, and no ADB targets are configured."
+        : "No active receiver is connected, and no ADB targets are configured."
+    );
+  }
+
+  const deviceSerial = await launchLiveTvViaAdb({
+    adbPath: input.adbPath,
+    deviceSerials: adbTargets,
+    channelUrl: input.channelUrl,
+    packageName: input.packageName,
+    shouldConnect: input.shouldConnect
+  });
+
+  return {
+    mode: "adb",
+    sessionId: input.sessionId,
+    deviceSerial
   };
 }
 
@@ -1586,6 +1676,37 @@ async function launchLiveTvIntent(input: {
   }
 }
 
+async function launchLiveTvViaAdb(input: {
+  adbPath: string;
+  deviceSerials: string[];
+  channelUrl: string;
+  packageName: string;
+  shouldConnect: boolean;
+}): Promise<string> {
+  let lastError: unknown = null;
+
+  for (const deviceSerial of input.deviceSerials) {
+    try {
+      await launchLiveTvIntent({
+        adbPath: input.adbPath,
+        deviceSerial,
+        channelUrl: input.channelUrl,
+        packageName: input.packageName,
+        shouldConnect: input.shouldConnect
+      });
+      return deviceSerial;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+
+  throw new Error("ADB launch failed for every configured device target.");
+}
+
 async function runAdbCommand(adbPath: string, args: string[]): Promise<void> {
   try {
     await execFileAsync(adbPath, args);
@@ -1603,6 +1724,35 @@ async function runAdbCommandBestEffort(adbPath: string, args: string[]): Promise
   } catch {
     // Best-effort cleanup commands should not block recovery.
   }
+}
+
+function resolveConfiguredAdbTargets(): string[] {
+  const jsonRaw = process.env.CLAWTV_ANDROID_TV_ADB_TARGETS_JSON?.trim();
+  const csvRaw = process.env.CLAWTV_ANDROID_TV_ADB_TARGETS?.trim();
+  const singleTarget = process.env.CLAWTV_ANDROID_TV_ADB_SERIAL?.trim();
+
+  if (jsonRaw) {
+    try {
+      const parsed = JSON.parse(jsonRaw);
+
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((value) => typeof value === "string" ? value.trim() : "")
+          .filter((value, index, all) => value.length > 0 && all.indexOf(value) === index);
+      }
+    } catch {
+      // Fall through to the simpler env formats.
+    }
+  }
+
+  if (csvRaw) {
+    return csvRaw
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value, index, all) => value.length > 0 && all.indexOf(value) === index);
+  }
+
+  return singleTarget ? [singleTarget] : [];
 }
 
 function delay(ms: number): Promise<void> {

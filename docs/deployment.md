@@ -19,6 +19,7 @@ The server serves the app and API under `/ClawTV` by default.
 - `CLAWTV_SERVER_ORIGIN=http://localhost:8787/ClawTV/`
 - `PLEX_BASE_URL=http://127.0.0.1:32400/`
 - default server port: `8787` for development
+- configure `CLAWTV_ANDROID_TV_ADB_TARGETS` with tailnet-first and LAN-fallback Shield targets when you need live TV launches to survive network changes
 
 ## Local Data
 

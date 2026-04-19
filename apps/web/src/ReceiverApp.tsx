@@ -117,7 +117,15 @@ export function ReceiverApp() {
   useEffect(() => {
     const receiverCommand = playback.receiverCommand;
 
-    if (!receiverCommand || receiverCommand.type !== "refresh") {
+    if (!receiverCommand) {
+      return;
+    }
+
+    if (receiverCommand.type !== "refresh") {
+      sendJsonBeacon("api/playback/receiver-command/ack", {
+        commandId: receiverCommand.id,
+        sessionId: playback.sessionId ?? undefined
+      });
       return;
     }
 

@@ -1133,7 +1133,9 @@ class MainActivity : AppCompatActivity() {
             lastAutoAdvancedItemId = null
         }
 
-        if (snapshot.receiverCommandId != null) {
+        if (snapshot.receiverCommandType == "launch-external-url" && snapshot.receiverCommandId != null) {
+            handleExternalLaunchCommand(snapshot)
+        } else if (snapshot.receiverCommandId != null) {
             acknowledgeReceiverCommand(snapshot.receiverCommandId, snapshot.sessionId)
         }
 
@@ -1234,6 +1236,7 @@ class MainActivity : AppCompatActivity() {
             put("positionMs", positionMsForReport(snapshot))
             put("sessionId", snapshot.sessionId)
             put("currentItemId", snapshot.itemId)
+            put("clientFeatures", JSONArray(CLIENT_FEATURES))
         }
 
         if (!force && lastReportedState == state) {
@@ -1255,6 +1258,7 @@ class MainActivity : AppCompatActivity() {
             put("positionMs", positionMsForReport(snapshot))
             put("sessionId", snapshot.sessionId)
             put("currentItemId", snapshot.itemId)
+            put("clientFeatures", JSONArray(CLIENT_FEATURES))
         }
 
         worker.execute {
@@ -1283,6 +1287,67 @@ class MainActivity : AppCompatActivity() {
                     }
                 )
             }
+        }
+    }
+
+    private fun handleExternalLaunchCommand(snapshot: PlaybackSnapshotPayload) {
+        val commandId = snapshot.receiverCommandId ?: return
+        val lastHandledCommandId = receiverPreferences.getString(LAST_HANDLED_RECEIVER_COMMAND_ID_PREF_KEY, null)
+
+        if (lastHandledCommandId == commandId) {
+            acknowledgeReceiverCommand(commandId, snapshot.sessionId)
+            return
+        }
+
+        val launched = launchExternalUrl(
+            url = snapshot.externalLiveTvUrl,
+            packageName = snapshot.externalLiveTvPackageName
+        )
+
+        if (launched) {
+            receiverPreferences.edit().putString(LAST_HANDLED_RECEIVER_COMMAND_ID_PREF_KEY, commandId).apply()
+        }
+
+        acknowledgeReceiverCommand(commandId, snapshot.sessionId)
+    }
+
+    private fun launchExternalUrl(url: String?, packageName: String?): Boolean {
+        val resolvedUrl = url?.trim().orEmpty()
+
+        if (resolvedUrl.isEmpty()) {
+            Log.w(TAG, "Receiver launch command arrived without a URL.")
+            return false
+        }
+
+        val baseIntent = Intent(Intent.ACTION_VIEW, Uri.parse(resolvedUrl)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val packagedIntent = packageName?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { targetPackage ->
+                Intent(baseIntent).apply {
+                    setPackage(targetPackage)
+                }
+            }
+
+        return try {
+            startActivity(packagedIntent ?: baseIntent)
+            Log.i(TAG, "Launched external URL $resolvedUrl package=${packageName ?: "default"}")
+            true
+        } catch (primaryError: Exception) {
+            if (packagedIntent != null) {
+                return try {
+                    startActivity(baseIntent)
+                    Log.i(TAG, "Launched external URL $resolvedUrl with package fallback after ${primaryError.message}")
+                    true
+                } catch (fallbackError: Exception) {
+                    Log.e(TAG, "Unable to launch external URL $resolvedUrl", fallbackError)
+                    false
+                }
+            }
+
+            Log.e(TAG, "Unable to launch external URL $resolvedUrl", primaryError)
+            false
         }
     }
 
@@ -1339,7 +1404,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun resolveInitialReceiverUrl(): String {
         val saved = receiverPreferences.getString(RECEIVER_URL_PREF_KEY, null)
-        return normalizeReceiverUrl(saved ?: BuildConfig.CLAWTV_RECEIVER_URL)
+        return receiverCandidates(saved).firstOrNull().orEmpty()
     }
 
     private fun persistReceiverUrl(url: String) {
@@ -1376,12 +1441,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun receiverCandidates(): List<String> {
+    private fun receiverCandidates(savedUrl: String? = receiverPreferences.getString(RECEIVER_URL_PREF_KEY, null)): List<String> {
         val candidates = mutableListOf<String>()
-        receiverPreferences.getString(RECEIVER_URL_PREF_KEY, null)?.let(candidates::add)
+        savedUrl?.let(candidates::add)
         candidates.add(BuildConfig.CLAWTV_RECEIVER_URL)
         candidates.addAll(parseReceiverFallbackUrls())
         return candidates
+            .map(String::trim)
+            .filter { it.isNotEmpty() }
             .map(::normalizeReceiverUrl)
             .distinct()
     }
@@ -1428,6 +1495,7 @@ class MainActivity : AppCompatActivity() {
     private fun parsePlaybackSnapshot(payload: JSONObject): PlaybackSnapshotPayload {
         val currentItem = payload.optJSONObject("currentItem")
         val receiverCommand = payload.optJSONObject("receiverCommand")
+        val externalLiveTv = payload.optJSONObject("externalLiveTv")
         val playbackState = payload.optString("playbackState", "idle")
         val controlRevision = payload.optInt("controlRevision", 0)
         val itemId = currentItem?.optString("id")?.takeIf { it.isNotEmpty() }
@@ -1444,6 +1512,8 @@ class MainActivity : AppCompatActivity() {
             showTitle = currentItem?.optString("showTitle")?.takeIf { it.isNotEmpty() },
             receiverCommandId = receiverCommand?.optString("id")?.takeIf { it.isNotEmpty() },
             receiverCommandType = receiverCommand?.optString("type")?.takeIf { it.isNotEmpty() },
+            externalLiveTvUrl = externalLiveTv?.optString("launchedUrl")?.takeIf { it.isNotEmpty() },
+            externalLiveTvPackageName = externalLiveTv?.optString("packageName")?.takeIf { it.isNotEmpty() },
             streamUrl = if (itemId != null && streamPath != null) resolveDirectStreamUrl(itemId) else null
         )
     }
@@ -1647,6 +1717,7 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "ClawTvMainActivity"
         private const val RECEIVER_PREFS_NAME = "clawtv_receiver"
         private const val RECEIVER_URL_PREF_KEY = "receiver_url"
+        private const val LAST_HANDLED_RECEIVER_COMMAND_ID_PREF_KEY = "last_handled_receiver_command_id"
         private const val REQUEST_RECORD_AUDIO_PERMISSION = 1001
         private const val POLL_INTERVAL_MS = 2_000L
         private const val POSITION_SYNC_INTERVAL_MS = 5_000L
@@ -1662,6 +1733,7 @@ class MainActivity : AppCompatActivity() {
         private const val VOICE_MINIMUM_LISTEN_MS = 3_500L
         private const val SEEK_BACK_MS = 10_000
         private const val SEEK_FORWARD_MS = 30_000
+        private val CLIENT_FEATURES = listOf("launch-external-url")
 
         private fun playbackStateLabel(playbackState: Int): String {
             return when (playbackState) {
@@ -1691,6 +1763,8 @@ private data class PlaybackSnapshotPayload(
     val showTitle: String?,
     val receiverCommandId: String?,
     val receiverCommandType: String?,
+    val externalLiveTvUrl: String?,
+    val externalLiveTvPackageName: String?,
     val streamUrl: String?
 )
 

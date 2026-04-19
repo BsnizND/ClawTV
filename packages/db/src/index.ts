@@ -24,6 +24,7 @@ import type {
   MediaItemSummary,
   PlaybackMediaItem,
   PlaybackSnapshot,
+  ReceiverCommandType,
   RecommendationStrategy,
   ServerStatus,
   SessionSummary,
@@ -2547,7 +2548,18 @@ export class ClawTvDatabase {
     );
   }
 
-  private issueReceiverCommand(sessionId: string, commandType: "refresh"): void {
+  queueReceiverCommand(sessionId: string, commandType: ReceiverCommandType): PlaybackSnapshot {
+    const session = this.getTargetSession(sessionId);
+
+    if (!session) {
+      return this.getPlaybackSnapshot(null);
+    }
+
+    this.issueReceiverCommand(session.id, commandType);
+    return this.getPlaybackSnapshot(session.id);
+  }
+
+  private issueReceiverCommand(sessionId: string, commandType: ReceiverCommandType): void {
     const now = new Date().toISOString();
 
     this.db.prepare(`

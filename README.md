@@ -79,6 +79,7 @@ export CLAWTV_OPENCLAW_AGENT_ID=your-assistant-id
 export CLAWTV_OPENCLAW_THINKING=low
 export CLAWTV_OPENCLAW_TIMEOUT_SECONDS=90
 export CLAWTV_ANDROID_TV_ADB_SERIAL=192.168.1.50:5555
+export CLAWTV_ANDROID_TV_ADB_TARGETS=100.64.0.10:5555,192.168.1.50:5555
 export CLAWTV_ANDROID_TV_ADB_CONNECT=true
 export CLAWTV_ANDROID_TV_ADB_PATH=adb
 export CLAWTV_YOUTUBE_TV_PACKAGE=com.google.android.youtube.tvunplugged
@@ -158,7 +159,8 @@ The rollout plan for the full live assistant loop is in [docs/voice-roadmap.md](
 
 ClawTV now has a small MVP path for launching YouTube TV on a networked Android TV device over ADB.
 
-- configure `CLAWTV_ANDROID_TV_ADB_SERIAL` with the Shield's ADB serial or `host:port`
+- configure `CLAWTV_ANDROID_TV_ADB_TARGETS` with tailnet-first and LAN-fallback Shield ADB targets when the receiver may move between networks
+- keep `CLAWTV_ANDROID_TV_ADB_SERIAL` only as the single-target fallback for older configs
 - ensure ADB debugging is enabled on the Shield and the server host can reach it
 - map local or custom channel names to YouTube TV watch URLs with `CLAWTV_YOUTUBE_TV_CHANNEL_URLS_JSON`
 - inspect the configured lineup with `clawtv live-tv-channels`

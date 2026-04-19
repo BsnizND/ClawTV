@@ -20,11 +20,9 @@ This app is a thin native Android TV receiver for ClawTV.
 
 ## Server URL
 
-The app defaults to a neutral local-network receiver hostname:
-
-- `http://clawtv.local:4390/ClawTV/`
-
+The app no longer bakes in a local-network receiver hostname by default.
 For real deployments, pass an explicit server origin at build time.
+For portable Shield demos, use your Tailscale-reachable ClawTV origin as the primary URL and keep any home-LAN URL as a fallback only.
 
 You can override that at build time:
 
@@ -38,7 +36,7 @@ The receiver can be built with generic voice defaults that are later overridden 
 
 ```bash
 gradle -p apps/android-tv assembleDebug \
-  -PclawtvReceiverUrl=http://your-server:8787/ClawTV/ \
+  -PclawtvReceiverUrl=https://your-tailnet-host/ClawTV/ \
   -PclawtvReceiverFallbackUrls=https://your-tailnet-host/ClawTV/,http://your-lan-host:4390/ClawTV/ \
   -PclawtvVoiceAssistantName=Assistant \
   -PclawtvVoiceAssistantId=default-assistant \

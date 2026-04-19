@@ -19,7 +19,8 @@ export type MediaType = "show" | "season" | "episode" | "movie";
 export type CatalogMediaTypeFilter = MediaType | "any";
 export type PlaybackClientMode = "idle" | "native-hls" | "hls.js" | "unsupported";
 export type PlaybackAutoplayStatus = "unknown" | "started" | "blocked" | "failed";
-export type ReceiverCommandType = "refresh";
+export type ReceiverCommandType = "refresh" | "launch-external-url";
+export type ReceiverClientFeature = "launch-external-url";
 export type VoiceReplyMode = "client-tts" | "server-audio" | "none";
 export type VoiceSttMode = "shield" | "server";
 export type VoiceBackendMode = "mock" | "openclaw";
@@ -321,6 +322,7 @@ export interface PlaybackStateUpdateRequest {
   positionMs?: number;
   sessionId?: string;
   currentItemId?: string | null;
+  clientFeatures?: ReceiverClientFeature[];
 }
 
 export interface SeekCommandRequest {
