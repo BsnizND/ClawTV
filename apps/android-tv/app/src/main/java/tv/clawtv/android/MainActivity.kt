@@ -641,13 +641,6 @@ class MainActivity : AppCompatActivity() {
 
                     override fun onError(error: Int) {
                         speechListeningActive = false
-                        if (shouldDismissFollowUpOnNoSpeech(error)) {
-                            followUpListeningActive = false
-                            awaitingManualVoiceReply = false
-                            scheduleVoiceDismiss(resumePlayback = followUpResumePlayback, delayMs = VOICE_FOLLOW_UP_DISMISS_MS)
-                            return
-                        }
-
                         if (shouldHoldVoiceConversationOpen(error)) {
                             showVoiceOverlay(
                                 title = voiceProfile.assistantName,
@@ -1031,8 +1024,6 @@ class MainActivity : AppCompatActivity() {
         followUpListeningActive = false
         followUpResumePlayback = resumePlayback
         speechListeningActive = false
-        mainHandler.removeCallbacks(followUpVoiceListenRunnable)
-        mainHandler.postDelayed(followUpVoiceListenRunnable, VOICE_FOLLOW_UP_DELAY_MS)
     }
 
     private fun beginManualFollowUpListening() {
@@ -1040,7 +1031,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        mainHandler.removeCallbacks(followUpVoiceListenRunnable)
         beginFollowUpListening()
     }
 
@@ -1068,7 +1058,7 @@ class MainActivity : AppCompatActivity() {
             return false
         }
 
-        if (!awaitingManualVoiceReply) {
+        if (!awaitingManualVoiceReply && !followUpListeningActive) {
             return false
         }
 
@@ -1077,12 +1067,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         awaitingManualVoiceReply = true
+        followUpListeningActive = false
         return true
-    }
-
-    private fun shouldDismissFollowUpOnNoSpeech(error: Int): Boolean {
-        return followUpListeningActive
-            && (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
     }
 
     private fun sendCommand(commandName: String, body: JSONObject = JSONObject()) {

@@ -302,6 +302,8 @@ export interface CatalogNetworkContext {
   }>;
 }
 
+const EXTERNAL_LIVE_TV_RETURN_GRACE_MS = 15_000;
+
 export function createDatabasePaths(rootDir: string, dataDir?: string): DatabasePaths {
   const resolvedDataDir = dataDir ?? join(rootDir, "data");
 
@@ -1100,6 +1102,8 @@ export class ClawTvDatabase {
       sessionId: session.id,
       lastSeenAt: now
     });
+
+    this.maybeMarkExternalLiveTvInactive(session.id, playbackState, options?.currentItemId, now);
 
     return this.getPlaybackSnapshot(session.id);
   }
@@ -2101,6 +2105,39 @@ export class ClawTvDatabase {
       sessionId: targetSessionId,
       updatedAt: new Date().toISOString()
     });
+  }
+
+  private maybeMarkExternalLiveTvInactive(
+    sessionId: string,
+    playbackState: ClientPlaybackState,
+    currentItemId: string | null | undefined,
+    now: string
+  ): void {
+    const liveTvState = this.getExternalLiveTvState(sessionId);
+    if (!liveTvState?.isActive) {
+      return;
+    }
+
+    if (currentItemId) {
+      this.clearExternalLiveTvState(sessionId);
+      return;
+    }
+
+    if (playbackState !== "idle") {
+      return;
+    }
+
+    const liveTvUpdatedAtMs = Date.parse(liveTvState.updatedAt || liveTvState.tunedAt);
+    const nowMs = Date.parse(now);
+    if (!Number.isFinite(liveTvUpdatedAtMs) || !Number.isFinite(nowMs)) {
+      return;
+    }
+
+    // A later idle heartbeat from the receiver means Brian has returned to ClawTV,
+    // so the old external-app handoff should stop reading as currently active.
+    if (nowMs - liveTvUpdatedAtMs >= EXTERNAL_LIVE_TV_RETURN_GRACE_MS) {
+      this.clearExternalLiveTvState(sessionId);
+    }
   }
 
   private runMigrations(): void {

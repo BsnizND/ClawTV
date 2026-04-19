@@ -2091,6 +2091,7 @@ function buildOpenClawPrompt(input: {
     "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
     "Keep replyText warm, concise, and human.",
     "Use the supplied Playback and Live TV state directly when it already answers the user.",
+    "External live TV state is handoff memory, not live observation. Never say the user is definitely still on that channel or that you are watching it with them.",
     "Use clawtv-control for authoritative ClawTV facts or actions. Never call clawtv-control voice-turn from inside this handoff.",
     "If you change playback or retune live TV, do it through clawtv-control before replying and set action to what you completed.",
     "If you only answered a question, set action to none.",
@@ -2133,9 +2134,15 @@ function describeNetworkContextForPrompt(input: NonNullable<ReturnType<typeof db
 
 function describePlaybackContextForPrompt(snapshot: PlaybackSnapshot): string {
   if (!snapshot.currentItem) {
-    return snapshot.externalLiveTv?.isActive
-      ? `ClawTV is not playing internal media. External live TV is active on ${snapshot.externalLiveTv.channelLabel}.`
-      : "Nothing is currently playing in ClawTV.";
+    if (snapshot.externalLiveTv?.isActive) {
+      return `ClawTV is not playing internal media. The last external live TV handoff was ${snapshot.externalLiveTv.channelLabel}, but the current screen in YouTube TV is unverified.`;
+    }
+
+    if (snapshot.externalLiveTv) {
+      return `ClawTV is not playing internal media. The last remembered external live TV handoff was ${snapshot.externalLiveTv.channelLabel}, and the user has since returned to ClawTV.`;
+    }
+
+    return "Nothing is currently playing in ClawTV.";
   }
 
   const parts = [
@@ -2168,6 +2175,7 @@ function buildOpenClawFinalOnlyPrompt(input: {
     "Return JSON only.",
     "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
     "Keep the reply warm, concise, and direct.",
+    "External live TV state is handoff memory, not live observation. Never say the user is definitely still on that channel or that you are watching it with them.",
     "Use clawtv-control when you need authoritative ClawTV state or need to perform a ClawTV action. Never call clawtv-control voice-turn from inside this handoff.",
     "Use the supplied state and recent conversation to resolve follow-ups like yes, the other one, switch to it, and go back.",
     "If external live TV is active, do not pretend ClawTV can pause or resume the YouTube TV app itself.",
@@ -2579,7 +2587,11 @@ function describeExternalLiveTvStateForPrompt(liveTvState: ExternalLiveTvState |
     return "No persisted external live TV state.";
   }
 
-  return `${liveTvState.channelLabel} via ${liveTvState.provider} at ${liveTvState.tunedAt}. Active: ${liveTvState.isActive ? "yes" : "no"}.`;
+  if (liveTvState.isActive) {
+    return `${liveTvState.channelLabel} via ${liveTvState.provider} at ${liveTvState.tunedAt}. ClawTV last launched this channel externally, but the current screen is unverified.`;
+  }
+
+  return `${liveTvState.channelLabel} via ${liveTvState.provider} at ${liveTvState.tunedAt}. Historical handoff only; the user has since returned to ClawTV.`;
 }
 
 function parseVoiceCommandName(value: unknown): VoiceTurnResponse["action"] {
