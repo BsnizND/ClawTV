@@ -1779,9 +1779,10 @@ async function executeVoiceCommandDecision(input: {
     }
   }
 
+  const normalizedPayload = normalizeVoiceCommandPayload(input.commandName, input.payload);
   const result = db.applyCommand({
     commandName: input.commandName,
-    payload: input.payload,
+    payload: normalizedPayload,
     source: "voice",
     sessionId: input.sessionId
   });
@@ -1789,7 +1790,7 @@ async function executeVoiceCommandDecision(input: {
 
   return {
     action: input.commandName,
-    payload: input.payload,
+    payload: normalizedPayload,
     ok: result.ok,
     message: result.message,
     matchedItemCount: result.matchedItemCount
@@ -2045,6 +2046,7 @@ function buildOpenClawPrompt(input: {
     "Use clawtv-control for authoritative ClawTV facts or actions. Never call clawtv-control voice-turn from inside this handoff.",
     "If you change playback, subtitle state, or retune live TV, do it through clawtv-control before replying and set action to what you completed.",
     "If the user asks to resume a named title that is not the current item, use action resume with payload {\"title\":\"...\"}. ClawTV can resume saved title progress even when playback is currently idle.",
+    "For shuffle, use payload {\"show\":\"...\"} when shuffling a show, {\"collection\":\"...\"} for a collection, or {\"network\":\"...\"} for a network.",
     "If you only answered a question, set action to none.",
     "If the request is ambiguous, ask one short follow-up question and set expectsReply to true.",
     "If external live TV is active, do not claim you can pause, resume, seek, or skip inside the YouTube TV app. Retuning is okay.",
@@ -2130,6 +2132,7 @@ function buildOpenClawFinalOnlyPrompt(input: {
     "External live TV state is handoff memory, not live observation. Never say the user is definitely still on that channel or that you are watching it with them.",
     "Use clawtv-control when you need authoritative ClawTV state or need to perform a ClawTV action. Never call clawtv-control voice-turn from inside this handoff.",
     "If the user asks to resume a named title that is not currently playing, use commandName resume with payload {\"title\":\"...\"}. ClawTV can resume saved title progress even while playback is idle.",
+    "For shuffle, use payload {\"show\":\"...\"} when shuffling a show, {\"collection\":\"...\"} for a collection, or {\"network\":\"...\"} for a network.",
     "Use the supplied state and recent conversation to resolve follow-ups like yes, the other one, switch to it, and go back.",
     "If external live TV is active, do not pretend ClawTV can pause or resume the YouTube TV app itself.",
     `Current playback context: ${describePlaybackContextForPrompt(input.playback)}`,
@@ -2580,6 +2583,34 @@ function parseLiveTvTunePayload(payload: Record<string, unknown>): LiveTvTuneReq
     provider: parseLiveTvProvider(payload.provider),
     channel
   };
+}
+
+function normalizeVoiceCommandPayload(
+  commandName: Exclude<VoiceTurnResponse["action"], "none">,
+  payload: Record<string, unknown>
+): Record<string, unknown> {
+  const normalizedPayload = { ...payload };
+  const title = typeof normalizedPayload.title === "string" ? normalizedPayload.title.trim() : "";
+
+  if (
+    commandName === "shuffle"
+    && title.length > 0
+    && !hasNonEmptyString(normalizedPayload.show)
+    && !hasNonEmptyString(normalizedPayload.collection)
+    && !hasNonEmptyString(normalizedPayload.network)
+  ) {
+    normalizedPayload.show = title;
+  }
+
+  if (commandName === "play-latest" && title.length > 0 && !hasNonEmptyString(normalizedPayload.series)) {
+    normalizedPayload.series = title;
+  }
+
+  return normalizedPayload;
+}
+
+function hasNonEmptyString(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function normalizeRuntimeLogPath(value: string | undefined): string | null {
