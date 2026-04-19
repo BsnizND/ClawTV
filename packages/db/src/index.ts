@@ -161,6 +161,7 @@ interface QueueStateRow {
   current_queue_item_id: string | null;
   player_state: ClientPlaybackState;
   playback_position_ms: number;
+  subtitles_enabled: number;
   control_revision: number;
   receiver_command_id: string | null;
   receiver_command_type: string | null;
@@ -186,6 +187,7 @@ interface PlaybackSnapshotRow {
   current_queue_item_id: string | null;
   player_state: ClientPlaybackState;
   playback_position_ms: number;
+  subtitles_enabled: number;
   control_revision: number;
   receiver_command_id: string | null;
   receiver_command_type: string | null;
@@ -519,6 +521,7 @@ export class ClawTvDatabase {
         queueId: null,
         playbackState: "idle",
         playbackPositionMs: 0,
+        subtitlesEnabled: false,
         controlRevision: 0,
       receiverCommand: null,
       updatedAt: null,
@@ -539,6 +542,7 @@ export class ClawTvDatabase {
         ps.current_queue_item_id,
         ps.player_state,
         ps.playback_position_ms,
+        ps.subtitles_enabled,
         ps.control_revision,
         ps.receiver_command_id,
         ps.receiver_command_type,
@@ -628,6 +632,7 @@ export class ClawTvDatabase {
         queueId: null,
         playbackState: "idle",
         playbackPositionMs: 0,
+        subtitlesEnabled: false,
         controlRevision: 0,
         receiverCommand: null,
         updatedAt: null,
@@ -646,6 +651,7 @@ export class ClawTvDatabase {
       queueId: row.queue_id,
       playbackState: row.player_state,
       playbackPositionMs: row.playback_position_ms,
+      subtitlesEnabled: Boolean(row.subtitles_enabled),
       controlRevision: row.control_revision,
       receiverCommand: row.receiver_command_id && row.receiver_command_type && row.receiver_command_at
         ? {
@@ -1255,6 +1261,24 @@ export class ClawTvDatabase {
         ok: true,
         playbackState: "idle",
         queueId: this.getQueueState(session.id).queue_id,
+        matchedItems: [],
+        source: input.source,
+        sessionId: session.id,
+        payload: input.payload
+      });
+    }
+
+    if (input.commandName === "subtitles-on" || input.commandName === "subtitles-off") {
+      const enabled = input.commandName === "subtitles-on";
+      const queueState = this.getQueueState(session.id);
+      this.setSubtitlesEnabled(session.id, enabled);
+      return this.finishCommand({
+        commandName: input.commandName,
+        acceptedAt,
+        message: enabled ? "Subtitles turned on." : "Subtitles turned off.",
+        ok: true,
+        playbackState: queueState.player_state,
+        queueId: queueState.queue_id,
         matchedItems: [],
         source: input.source,
         sessionId: session.id,
@@ -2364,6 +2388,7 @@ export class ClawTvDatabase {
         current_queue_item_id,
         player_state,
         playback_position_ms,
+        subtitles_enabled,
         control_revision,
         receiver_command_id,
         receiver_command_type,
@@ -2476,6 +2501,31 @@ export class ClawTvDatabase {
     }
 
     return Math.max(0, Math.round(row.playback_position_ms));
+  }
+
+  private setSubtitlesEnabled(sessionId: string, enabled: boolean): void {
+    const now = new Date().toISOString();
+
+    this.db.prepare(`
+      UPDATE playback_state
+      SET
+        subtitles_enabled = :subtitlesEnabled,
+        updated_at = :updatedAt
+      WHERE session_id = :sessionId
+    `).run({
+      sessionId,
+      subtitlesEnabled: enabled ? 1 : 0,
+      updatedAt: now
+    });
+
+    this.db.prepare(`
+      UPDATE sessions
+      SET last_seen_at = :lastSeenAt
+      WHERE id = :sessionId
+    `).run({
+      sessionId,
+      lastSeenAt: now
+    });
   }
 
   private updatePlaybackState(

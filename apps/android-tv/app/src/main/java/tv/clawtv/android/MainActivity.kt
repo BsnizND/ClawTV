@@ -163,10 +163,7 @@ class MainActivity : AppCompatActivity() {
         refreshVoiceProfile()
 
         player = ExoPlayer.Builder(this).build().also { exoPlayer ->
-            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                .buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                .build()
+            applySubtitlePreference(enabled = false, targetPlayer = exoPlayer)
             exoPlayer.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     Log.i(
@@ -1131,6 +1128,7 @@ class MainActivity : AppCompatActivity() {
         val previousItemId = currentSnapshot?.itemId
         val controlRevisionChanged = lastAppliedControlRevision != snapshot.controlRevision
         currentSnapshot = snapshot
+        applySubtitlePreference(snapshot.subtitlesEnabled)
         if (snapshot.itemId != previousItemId) {
             lastAutoAdvancedItemId = null
         }
@@ -1420,6 +1418,13 @@ class MainActivity : AppCompatActivity() {
         return if (url.endsWith("/")) url else "$url/"
     }
 
+    private fun applySubtitlePreference(enabled: Boolean, targetPlayer: ExoPlayer = player) {
+        targetPlayer.trackSelectionParameters = targetPlayer.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !enabled)
+            .build()
+    }
+
     private fun parsePlaybackSnapshot(payload: JSONObject): PlaybackSnapshotPayload {
         val currentItem = payload.optJSONObject("currentItem")
         val receiverCommand = payload.optJSONObject("receiverCommand")
@@ -1432,6 +1437,7 @@ class MainActivity : AppCompatActivity() {
             sessionId = payload.optString("sessionId").takeIf { it.isNotEmpty() },
             playbackState = playbackState,
             playbackPositionMs = payload.optInt("playbackPositionMs", 0),
+            subtitlesEnabled = payload.optBoolean("subtitlesEnabled", false),
             controlRevision = controlRevision,
             itemId = itemId,
             title = currentItem?.optString("title")?.takeIf { it.isNotEmpty() },
@@ -1678,6 +1684,7 @@ private data class PlaybackSnapshotPayload(
     val sessionId: String?,
     val playbackState: String,
     val playbackPositionMs: Int,
+    val subtitlesEnabled: Boolean,
     val controlRevision: Int,
     val itemId: String?,
     val title: String?,

@@ -1282,6 +1282,8 @@ function parseCommandName(value: string): CommandName | null {
     || value === "refresh"
     || value === "next"
     || value === "stop"
+    || value === "subtitles-on"
+    || value === "subtitles-off"
     ? value
     : null;
 }
@@ -1749,6 +1751,11 @@ async function buildConversationalReply(input: {
   voiceConfig: VoiceConfig;
   sessionId?: string | null;
 }): Promise<VoiceDecision> {
+  const subtitleDecision = maybeBuildSubtitleVoiceDecision(input.transcript, input.playback, input.sessionId);
+  if (subtitleDecision) {
+    return subtitleDecision;
+  }
+
   if (input.voiceConfig.backend === "openclaw") {
     const openClawReply = await runOpenClawVoiceTurn({
       ...input
@@ -1773,6 +1780,77 @@ async function buildConversationalReply(input: {
     payload: {},
     expectsReply: false
   };
+}
+
+function maybeBuildSubtitleVoiceDecision(
+  transcript: string,
+  playback: PlaybackSnapshot,
+  sessionId?: string | null
+): VoiceDecision | null {
+  const normalized = transcript.toLowerCase().trim();
+  const mentionsSubtitles = /\b(subtitles|subtitle|captions|caption)\b/u.test(normalized);
+
+  if (!mentionsSubtitles) {
+    return null;
+  }
+
+  const wantsOn = /\b(turn|switch|put|show|enable)\b.*\b(subtitles|subtitle|captions|caption)\b/u.test(normalized)
+    || /\b(subtitles|subtitle|captions|caption)\b.*\b(on)\b/u.test(normalized)
+    || /\bwith subtitles\b/u.test(normalized);
+  const wantsOff = /\b(turn|switch|shut|disable|hide|remove)\b.*\b(subtitles|subtitle|captions|caption)\b/u.test(normalized)
+    || /\b(subtitles|subtitle|captions|caption)\b.*\b(off)\b/u.test(normalized)
+    || /\bno subtitles\b/u.test(normalized)
+    || /\bno captions\b/u.test(normalized);
+
+  if (wantsOn && !wantsOff) {
+    const commandName: CommandName = "subtitles-on";
+    const result = db.applyCommand({
+      commandName,
+      payload: {},
+      source: "voice",
+      sessionId: sessionId ?? playback.sessionId
+    });
+    return {
+      ok: result.ok,
+      replyText: playback.subtitlesEnabled ? "Subtitles are already on." : "Okay. Turning subtitles on.",
+      commandName,
+      payload: {},
+      expectsReply: false,
+      executedAction: {
+        action: commandName,
+        payload: {},
+        ok: result.ok,
+        message: result.message,
+        matchedItemCount: result.matchedItemCount
+      }
+    };
+  }
+
+  if (wantsOff && !wantsOn) {
+    const commandName: CommandName = "subtitles-off";
+    const result = db.applyCommand({
+      commandName,
+      payload: {},
+      source: "voice",
+      sessionId: sessionId ?? playback.sessionId
+    });
+    return {
+      ok: result.ok,
+      replyText: playback.subtitlesEnabled ? "Okay. Turning subtitles off." : "Subtitles are already off.",
+      commandName,
+      payload: {},
+      expectsReply: false,
+      executedAction: {
+        action: commandName,
+        payload: {},
+        ok: result.ok,
+        message: result.message,
+        matchedItemCount: result.matchedItemCount
+      }
+    };
+  }
+
+  return null;
 }
 
 function maybeBuildCuratorVoiceDecision(transcript: string): {
@@ -2092,12 +2170,12 @@ function buildOpenClawPrompt(input: {
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
     "Return JSON only.",
-    "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
+    "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|subtitles-on|subtitles-off|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
     "Keep replyText warm, concise, and human.",
     "Use the supplied Playback and Live TV state directly when it already answers the user.",
     "External live TV state is handoff memory, not live observation. Never say the user is definitely still on that channel or that you are watching it with them.",
     "Use clawtv-control for authoritative ClawTV facts or actions. Never call clawtv-control voice-turn from inside this handoff.",
-    "If you change playback or retune live TV, do it through clawtv-control before replying and set action to what you completed.",
+    "If you change playback, subtitle state, or retune live TV, do it through clawtv-control before replying and set action to what you completed.",
     "If you only answered a question, set action to none.",
     "If the request is ambiguous, ask one short follow-up question and set expectsReply to true.",
     "If external live TV is active, do not claim you can pause, resume, seek, or skip inside the YouTube TV app. Retuning is okay.",
@@ -2152,6 +2230,7 @@ function describePlaybackContextForPrompt(snapshot: PlaybackSnapshot): string {
   const parts = [
     `State: ${snapshot.playbackState}`,
     `Title: ${snapshot.currentItem.title}`,
+    `Subtitles: ${snapshot.subtitlesEnabled ? "on" : "off"}`,
     snapshot.currentItem.showTitle ? `Show: ${snapshot.currentItem.showTitle}` : null,
     formatEpisodeLabel(snapshot.currentItem.seasonNumber, snapshot.currentItem.episodeNumber)
       ? `Episode: ${formatEpisodeLabel(snapshot.currentItem.seasonNumber, snapshot.currentItem.episodeNumber)}`
@@ -2177,7 +2256,7 @@ function buildOpenClawFinalOnlyPrompt(input: {
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
     "Return JSON only.",
-    "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
+    "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|subtitles-on|subtitles-off|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
     "Keep the reply warm, concise, and direct.",
     "External live TV state is handoff memory, not live observation. Never say the user is definitely still on that channel or that you are watching it with them.",
     "Use clawtv-control when you need authoritative ClawTV state or need to perform a ClawTV action. Never call clawtv-control voice-turn from inside this handoff.",
@@ -2614,6 +2693,8 @@ function parseVoiceCommandName(value: unknown): VoiceTurnResponse["action"] {
     || value === "resume"
     || value === "next"
     || value === "stop"
+    || value === "subtitles-on"
+    || value === "subtitles-off"
     || value === "live-tv-tune"
     ? value
     : "none";

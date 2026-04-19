@@ -1,7 +1,18 @@
 export type SessionType = "tv";
 export type SessionConnectionStatus = "connected" | "disconnected";
 export type ClientPlaybackState = "booting" | "idle" | "loading" | "playing" | "paused" | "error";
-export type CommandName = "play" | "play-latest" | "shuffle" | "pause" | "resume" | "seek" | "refresh" | "next" | "stop";
+export type CommandName =
+  | "play"
+  | "play-latest"
+  | "shuffle"
+  | "pause"
+  | "resume"
+  | "seek"
+  | "refresh"
+  | "next"
+  | "stop"
+  | "subtitles-on"
+  | "subtitles-off";
 export type SyncMode = "full-sync" | "incremental-sync" | "single-item-refresh";
 export type SyncStatus = "success" | "failed" | "running";
 export type MediaType = "show" | "season" | "episode" | "movie";
@@ -119,6 +130,7 @@ export interface PlaybackSnapshot {
   queueId: string | null;
   playbackState: ClientPlaybackState;
   playbackPositionMs: number;
+  subtitlesEnabled: boolean;
   controlRevision: number;
   receiverCommand: ReceiverCommand | null;
   updatedAt: string | null;

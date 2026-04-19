@@ -271,6 +271,8 @@ Usage:
   clawtv refresh
   clawtv next
   clawtv stop
+  clawtv subtitles-on
+  clawtv subtitles-off
 
 Environment:
   CLAWTV_SERVER_ORIGIN=${serverOrigin}`);
@@ -330,7 +332,9 @@ function isCommandName(value: string): value is CommandName {
     "seek",
     "refresh",
     "next",
-    "stop"
+    "stop",
+    "subtitles-on",
+    "subtitles-off"
   ].includes(value);
 }
 

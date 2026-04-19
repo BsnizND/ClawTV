@@ -16,6 +16,7 @@ const fallbackPlayback: PlaybackSnapshot = {
   queueId: null,
   playbackState: "idle",
   playbackPositionMs: 0,
+  subtitlesEnabled: false,
   controlRevision: 0,
   receiverCommand: null,
   updatedAt: null,
@@ -23,6 +24,7 @@ const fallbackPlayback: PlaybackSnapshot = {
   currentQueuePosition: null,
   currentItem: null,
   context: null,
+  externalLiveTv: null,
   streamPath: null,
   diagnostics: null
 };
@@ -268,6 +270,21 @@ export function ReceiverApp() {
     }
   }
 
+  function applySubtitlePreference() {
+    const video = videoRef.current;
+
+    if (!video) {
+      return;
+    }
+
+    const tracks = Array.from(video.textTracks ?? []);
+    tracks.forEach((track, index) => {
+      track.mode = playback.subtitlesEnabled
+        ? (index === 0 ? "showing" : "disabled")
+        : "disabled";
+    });
+  }
+
   function applyDesiredPlaybackPosition(force = false) {
     const video = videoRef.current;
     const currentItemId = playback.currentItem?.id ?? null;
@@ -335,6 +352,10 @@ export function ReceiverApp() {
     lastAppliedControlRevisionRef.current = playback.controlRevision;
     pendingSeekSecondsRef.current = null;
   }
+
+  useEffect(() => {
+    applySubtitlePreference();
+  }, [playback.subtitlesEnabled, playback.currentItem?.id]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -540,6 +561,7 @@ export function ReceiverApp() {
             clearAutoplayRetry();
             setIsLocallyBuffering(false);
             applyPendingSeek();
+            applySubtitlePreference();
             void reportDiagnostics({
               playbackMode: playback.diagnostics?.playbackMode ?? "idle",
               nativeHlsSupported: Boolean(playback.diagnostics?.nativeHlsSupported),
@@ -568,6 +590,7 @@ export function ReceiverApp() {
             setPlayerError(null);
             clearAutoplayRetry();
             applyPendingSeek();
+            applySubtitlePreference();
             setIsLocallyPlaying(true);
             setIsLocallyBuffering(false);
             clearRefreshRecoveryState(setRefreshRecoveryUntil);
