@@ -42,5 +42,10 @@ export CLAWTV_RUNTIME_LOG_MAX_BYTES="${CLAWTV_RUNTIME_LOG_MAX_BYTES:-1000000}"
 export CLAWTV_RUNTIME_LOG_TRIM_INTERVAL_MINUTES="${CLAWTV_RUNTIME_LOG_TRIM_INTERVAL_MINUTES:-15}"
 
 mkdir -p "${CLAWTV_DATA_DIR}"
+mkdir -p "$(dirname "${CLAWTV_SERVER_STDOUT_LOG}")"
+mkdir -p "$(dirname "${CLAWTV_SERVER_STDERR_LOG}")"
+touch "${CLAWTV_SERVER_STDOUT_LOG}" "${CLAWTV_SERVER_STDERR_LOG}"
 
-exec /opt/homebrew/bin/node "${repo_root}/apps/server/dist/index.js"
+exec /opt/homebrew/bin/node "${repo_root}/apps/server/dist/index.js" \
+  >> "${CLAWTV_SERVER_STDOUT_LOG}" \
+  2>> "${CLAWTV_SERVER_STDERR_LOG}"

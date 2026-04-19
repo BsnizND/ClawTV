@@ -54,10 +54,6 @@ cat > "${launch_agent_dst}" <<EOF
     <true/>
     <key>KeepAlive</key>
     <true/>
-    <key>StandardOutPath</key>
-    <string>${log_dir}/server.stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>${log_dir}/server.stderr.log</string>
   </dict>
 </plist>
 EOF
