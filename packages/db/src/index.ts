@@ -2878,7 +2878,7 @@ export class ClawTvDatabase {
       LEFT JOIN media_items show_mi ON show_mi.id = e.show_id
       LEFT JOIN seasons season ON season.media_item_id = e.season_id
       WHERE mi.media_type IN ('movie', 'episode')
-        AND COALESCE(mrs.position_ms, mi.view_offset_ms, 0) > 0
+        AND COALESCE(mrs.playback_position_ms, mi.view_offset_ms, 0) > 0
         AND (
           lower(mi.title) = lower(:title)
           OR lower(COALESCE(show_mi.title, '')) = lower(:title)
