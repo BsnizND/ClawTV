@@ -1,192 +1,46 @@
 ---
 name: clawtv-control
-description: Control ClawTV playback through the repo CLI. Use when an OpenClaw agent needs to check what is on TV, browse the catalog, search titles or series, list shows or collections, inspect recent additions, trigger a new-content sync, play something by title, play the latest episode of a series, shuffle a show or collection, send transport controls like pause, resume, seek, next, refresh, or stop, or exercise the ClawTV voice API.
+description: Control ClawTV playback and inspect the synced library through the ClawTV wrapper CLI. Use for now playing, live TV tuning, search, recent additions, play, play-latest, shuffle, transport controls, and check-new-content.
 ---
 
 # ClawTV Control
 
-Use this skill when an agent needs to control the TV through ClawTV's existing CLI.
+Use this skill when you need authoritative ClawTV state or need ClawTV to do something.
 
-This skill is only for ClawTV playback and status control. It does not fetch new media, search the web, or manage Sonarr/Radarr. If the user wants something that is not already in the library, use the appropriate ARR workflow separately.
+This skill is only for ClawTV playback, live TV, and synced-library visibility. It does not add media, browse the web, or manage Sonarr/Radarr.
 
-## Trigger Conditions
+## Normal Path
 
-Use this skill for requests like:
-- What's on TV right now?
-- How long is left in this movie or episode?
-- How many more episodes are there in this season after this one?
-- How many more seasons are there in this show after this one?
-- What live TV channels are configured?
-- Turn on ESPN2.
-- What shows do you have?
-- What collections exist?
-- Search for something in the library.
-- What was added recently?
-- Look for new content that just landed in Plex.
-- Play a movie or episode by title.
-- Play the latest episode of a show.
-- Shuffle a show or collection.
-- Pause, resume, stop, skip, refresh, or seek playback.
-- Inspect ClawTV voice config or run a voice turn through the server.
-
-## Workflow
-
-1. Map the request to the nearest ClawTV CLI command.
-2. Run the wrapper script:
+Run the wrapper directly and summarize the result in plain language:
 
 ```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py <command> [flags]
+python3 /Users/briansnyder/.openclaw/skills/clawtv-control/scripts/control_clawtv.py <command> [flags]
 ```
 
-3. Read the returned JSON or text summary, depending on the command.
-4. Report the outcome in plain language.
+Do not read repo files to rediscover the command surface unless the wrapper itself fails.
 
-If the user request is ambiguous, ask one short follow-up question before sending a playback command.
+If the request is ambiguous, ask one short follow-up question before sending a playback or live-TV command.
 
-## Commands
+## Use These Commands
 
-Check current playback:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py now-playing
-```
-
-Check the current playback summary and "what's left" context:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py now-playing-summary
-```
-
-List configured live TV channels:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py live-tv-channels
-```
-
-Check general server status:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py status
-```
-
-Search the catalog:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py search --query "john oliver"
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py search --query "medicare" --type episode
-```
-
-List shows or collections:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py list-shows --limit 20
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py list-collections --limit 20
-```
-
-Inspect recent additions:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py recently-added --limit 10
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py recently-added --type movie --limit 10
-```
-
-Trigger a Plex scan and pull in new content:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py check-new-content
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py check-new-content --library "TV Shows" --limit 10
-```
-
-Inspect voice config:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py voice-config
-```
-
-Run a voice turn through the ClawTV server:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py voice-turn --text "how long is left in this?"
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py voice-turn --text "pause" --playback-state playing
-```
-
-Tune configured live TV:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py live-tv --provider youtube-tv --channel "fox news"
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py live-tv --provider youtube-tv --channel espn2
-```
-
-Play by title:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py play --title "The Matrix"
-```
-
-Play the latest episode in a series:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py play-latest --series "Last Week Tonight with John Oliver"
-```
-
-Shuffle a show:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py shuffle --show "Bluey"
-```
-
-Shuffle a collection:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py shuffle --collection "Favorites"
-```
-
-Transport controls:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py pause
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py resume
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py next
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py stop
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py refresh
-```
-
-Seek controls:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py seek --by 30s
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py seek --back 2m
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py seek --to 12:34
-```
-
-## Defaults
-
-The wrapper script defaults to:
-- the repo checkout that contains the script itself
-- `CLAWTV_SERVER_ORIGIN` when it is set
-- otherwise, auto-detection of a local ClawTV runtime, preferring the deployed port before the dev port
-
-Override them when needed:
-- `CLAWTV_REPO_ROOT`
-- `CLAWTV_SERVER_ORIGIN`
-
-Or pass explicit flags:
-
-```bash
-python3 /path/to/skills/clawtv-control/scripts/control_clawtv.py --repo-root /some/checkout --server-origin http://host:4390/ClawTV/ now-playing
-```
+- `now-playing` or `now-playing-summary` for what is currently on and how much is left
+- `live-tv-channels` to see what ClawTV can tune
+- `live-tv --provider youtube-tv --channel "<name>"` to switch live TV
+- `status` for general server state
+- `search --query "<text>" [--type movie|show|season|episode|collection]`
+- `list-shows` or `list-collections`
+- `recently-added [--type movie|show|episode]`
+- `check-new-content [--library "<name>"] [--limit N]` when the user just added something to Plex and wants ClawTV to notice now
+- `play --title "<title>"`
+- `play-latest --series "<series>"`
+- `shuffle --show "<show>"` or `shuffle --collection "<collection>"`
+- `pause`, `resume`, `next`, `stop`, `refresh`
+- `seek --by 30s`, `seek --back 2m`, or `seek --to 12:34`
 
 ## Notes
 
-- Prefer `now-playing-summary` when the user is asking how much runtime, how many episodes, or how many seasons are left for the current item.
-- Prefer `live-tv-channels` when the user is asking what ClawTV can currently tune through YouTube TV.
-- Prefer `live-tv` when the user wants to switch to a configured live TV channel.
-- Prefer `voice-turn` when you want to exercise or debug the same server-side voice intent handling the Android TV receiver will use.
-- Do not use `voice-turn` from inside a ClawTV voice handoff that is already being handled by Kay. That would recurse back into the same path. Use direct ClawTV commands instead.
-- When `CLAWTV_VOICE_BACKEND=openclaw` is configured on the server, `voice-turn` exercises the live OpenClaw handoff path too.
-- Prefer `now-playing` or `status` first when the user is asking what is currently happening and raw JSON is useful.
-- Prefer `search`, `list-shows`, `list-collections`, or `recently-added` when the user is exploring what ClawTV already has.
-- Prefer `check-new-content` when the user just added something to Plex and wants ClawTV or the voice assistant to see it right away.
-- Prefer `play-latest` when the user asks for "last night's" or "latest" episode of a series.
-- Use `shuffle --show` or `shuffle --collection` only when the user clearly asked for a shuffle-style experience.
-- Keep the response focused on the outcome, not the raw command syntax, unless the user asked for it.
+- Never call the `voice-turn` wrapper command from inside an active ClawTV voice handoff. That would recurse back into the same path.
+- Prefer the supplied wrapper output over guessing.
+- `check-new-content` is more expensive than a normal lookup because it triggers a Plex scan and sync.
+- If the user is only browsing what is already synced, prefer `recently-added`, `search`, `list-shows`, or `list-collections`.
+- Keep the reply focused on outcome, not raw JSON, unless the user asked for the raw result.

@@ -2036,18 +2036,16 @@ async function runOpenClawVoiceTurn(input: {
   rawReplyText?: string | null;
   executedAction?: VoiceDecision["executedAction"];
 } | null> {
-  const recentTurns = db.listRecentVoiceTurns(6, input.sessionId ?? input.playback.sessionId ?? null);
-  const networkContext = input.networkContext ?? db.findNetworkContextForTranscript(input.transcript);
+  const recentTurns = db.listRecentVoiceTurns(2, input.sessionId ?? input.playback.sessionId ?? null);
   const prompt = buildOpenClawPrompt({
     ...input,
-    networkContext,
     recentTurns
   });
   const rawText = await runOpenClawJsonPrompt({
     prompt,
     agentId: input.voiceConfig.assistantId,
     timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
-    thinking: process.env.CLAWTV_OPENCLAW_THINKING?.trim()
+    thinking: getOpenClawThinking()
   });
 
   if (rawText) {
@@ -2060,12 +2058,11 @@ async function runOpenClawVoiceTurn(input: {
   const fallbackRawText = await runOpenClawPlainPrompt({
     prompt: buildOpenClawFinalOnlyPrompt({
       ...input,
-      networkContext,
       recentTurns
     }),
     agentId: input.voiceConfig.assistantId,
     timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
-    thinking: process.env.CLAWTV_OPENCLAW_THINKING?.trim()
+    thinking: getOpenClawThinking()
   });
   const finalFallback = fallbackRawText ? extractOpenClawReplyFromRawText(fallbackRawText) : null;
   return finalFallback ?? null;
@@ -2076,7 +2073,6 @@ function buildOpenClawPrompt(input: {
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
   sessionId?: string | null;
-  networkContext?: ReturnType<typeof db.findNetworkContextForTranscript>;
   curatorIntent?: {
     show: string;
     strategy: RecommendationStrategy;
@@ -2088,41 +2084,27 @@ function buildOpenClawPrompt(input: {
   const playbackSummary = describePlaybackContextForPrompt(input.playback);
   const externalLiveTvSummary = describeExternalLiveTvStateForPrompt(input.playback.externalLiveTv);
   const recentTurnsSummary = describeRecentVoiceTurnsForPrompt(input.recentTurns);
-  const recommendationContext = input.recommendation
-    ? describeRecommendationContextForPrompt(input.recommendation)
-    : "No recommendation candidate list was provided for this turn.";
-  const networkPrompt = input.networkContext
-    ? `Possible local Plex network context: ${input.networkContext.network} with shows ${describeNetworkContextForPrompt(input.networkContext)}. Treat this as evidence only, not a pre-decided intent.`
-    : "No local network/category candidate list was provided for this turn.";
-  const recommendationPrompt = input.curatorIntent
-    ? `Possible recommendation context for ${input.curatorIntent.show}: ${recommendationContext}`
-    : "If you ask a follow-up question or are waiting for clarification, set expectsReply to true.";
-  const liveTvPrompt = `Current external live TV state: ${externalLiveTvSummary}. Last ClawTV-tuned live TV state: ${describeLastLiveTvTuneForPrompt()}. ClawTV can launch or retune YouTube TV, but once the YouTube TV app is open it does not control in-app playback like pause/resume/seek/channel-up. Use the clawtv-control skill to inspect configured channels or retune when needed.`;
-  const currentTimePrompt = `Current server time: ${new Date().toString()}.`;
 
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
     "Return JSON only.",
     "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
-    "replyText should sound warm, direct, playful, and human. Keep it concise.",
-    "You have the clawtv-control skill available. Use that skill for authoritative ClawTV state inspection and ClawTV actions such as now-playing, now-playing-summary, live-tv-channels, live-tv, search, recently-added, play, play-latest, shuffle, pause, resume, seek, next, stop, refresh, sync-status, and check-new-content.",
-    "Do not call the clawtv-control voice-turn command from inside this request. That would recurse back into this same handoff.",
-    "If the user asks to change ClawTV playback or retune live TV, perform that action through the clawtv-control skill before replying.",
-    "If the answer depends on current playback, external live TV state, the local library, live TV channel lineup, or sync status, check ClawTV through the clawtv-control skill instead of guessing.",
-    "For ambiguous or fuzzy requests, prefer one short clarifying question over guessing.",
-    "If the user is referring to a prior suggestion with words like yes, that one, the other one, switch to it, or go back, use the recent conversation and current playback/live-TV context.",
-    "If external live TV is active, do not pretend ClawTV can pause, resume, seek, or skip inside the YouTube TV app itself. Retuning is okay when that matches the request.",
-    "Set action to the ClawTV action you actually performed through the skill. If you only answered a question, set action to none.",
-    "Set ok to false only if you could not complete the requested ClawTV action or give a useful answer.",
-    "Do not mention OpenClaw, prompts, JSON, transport, or implementation details.",
-    networkPrompt,
-    recommendationPrompt,
-    liveTvPrompt,
+    "Keep replyText warm, concise, and human.",
+    "Use the supplied Playback and Live TV state directly when it already answers the user.",
+    "Use clawtv-control for authoritative ClawTV facts or actions. Never call clawtv-control voice-turn from inside this handoff.",
+    "If you change playback or retune live TV, do it through clawtv-control before replying and set action to what you completed.",
+    "If you only answered a question, set action to none.",
+    "If the request is ambiguous, ask one short follow-up question and set expectsReply to true.",
+    "If external live TV is active, do not claim you can pause, resume, seek, or skip inside the YouTube TV app. Retuning is okay.",
     `Current playback context: ${playbackSummary}`,
-    `Recent conversation context: ${recentTurnsSummary}`,
-    currentTimePrompt,
+    `Current external live TV state: ${externalLiveTvSummary}`,
+    `Last ClawTV-tuned live TV state: ${describeLastLiveTvTuneForPrompt()}`,
+    input.curatorIntent && input.recommendation
+      ? `Recommendation context for ${input.curatorIntent.show}: ${describeRecommendationContextForPrompt(input.recommendation)}`
+      : null,
+    recentTurnsSummary === "none" ? null : `Recent conversation context: ${recentTurnsSummary}`,
     `User said: ${input.transcript}`
-  ].join(" ");
+  ].filter((value): value is string => Boolean(value)).join(" ");
 }
 
 function describeRecommendationContextForPrompt(input: CatalogRecommendationResponse): string {
@@ -2179,7 +2161,6 @@ function buildOpenClawFinalOnlyPrompt(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
-  networkContext?: ReturnType<typeof db.findNetworkContextForTranscript>;
   recentTurns: ReturnType<typeof db.listRecentVoiceTurns>;
 }): string {
   return [
@@ -2187,18 +2168,16 @@ function buildOpenClawFinalOnlyPrompt(input: {
     "Return JSON only.",
     "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
     "Keep the reply warm, concise, and direct.",
-    "Use the clawtv-control skill when you need authoritative ClawTV state or need to perform a ClawTV action. Available commands include now-playing, now-playing-summary, live-tv-channels, live-tv, search, recently-added, play, play-latest, shuffle, pause, resume, seek, next, stop, refresh, sync-status, and check-new-content.",
-    "Do not call the clawtv-control voice-turn command from inside this request.",
+    "Use clawtv-control when you need authoritative ClawTV state or need to perform a ClawTV action. Never call clawtv-control voice-turn from inside this handoff.",
     "Use the supplied state and recent conversation to resolve follow-ups like yes, the other one, switch to it, and go back.",
     "If external live TV is active, do not pretend ClawTV can pause or resume the YouTube TV app itself.",
     `Current playback context: ${describePlaybackContextForPrompt(input.playback)}`,
     `Current external live TV state: ${describeExternalLiveTvStateForPrompt(input.playback.externalLiveTv)}`,
-    `Recent conversation context: ${describeRecentVoiceTurnsForPrompt(input.recentTurns)}`,
-    input.networkContext
-      ? `Possible local Plex network context: ${input.networkContext.network} with shows ${describeNetworkContextForPrompt(input.networkContext)}.`
-      : "No special local Plex network context was found for this turn.",
+    describeRecentVoiceTurnsForPrompt(input.recentTurns) === "none"
+      ? null
+      : `Recent conversation context: ${describeRecentVoiceTurnsForPrompt(input.recentTurns)}`,
     `User said: ${input.transcript}`
-  ].join(" ");
+  ].filter((value): value is string => Boolean(value)).join(" ");
 }
 
 function extractOpenClawReplyFromRawText(rawText: string): {
@@ -2525,6 +2504,10 @@ async function runOpenClawAgentCommand(input: {
   }
 }
 
+function getOpenClawThinking(): string {
+  return process.env.CLAWTV_OPENCLAW_THINKING?.trim() || "low";
+}
+
 function sawOpenClawGatewayFallback(stderr: string | undefined): boolean {
   const normalized = (stderr ?? "").toLowerCase();
   return normalized.includes("gateway agent failed; falling back to embedded");
@@ -2554,17 +2537,26 @@ function extractOpenClawRawText(stdout: string): string | null {
 
 function describeRecentVoiceTurnsForPrompt(recentTurns: ReturnType<typeof db.listRecentVoiceTurns>): string {
   if (recentTurns.length === 0) {
-    return "No recent voice-turn history was found for this session.";
+    return "none";
   }
 
   return recentTurns
     .map((turn) => {
       const payloadSummary = Object.keys(turn.finalPayload).length > 0
-        ? ` payload=${JSON.stringify(turn.finalPayload)}`
+        ? ` payload=${summarizeRecentVoiceTurnPayload(turn.finalPayload)}`
         : "";
-      return `[${turn.createdAt}] User: ${turn.transcript} | Assistant: ${turn.finalReplyText} | action=${turn.finalCommandName}${payloadSummary}`;
+      return `U:${turn.transcript} | A:${turn.finalReplyText} | action=${turn.finalCommandName}${payloadSummary}`;
     })
     .join(" || ");
+}
+
+function summarizeRecentVoiceTurnPayload(payload: Record<string, unknown>): string {
+  const raw = JSON.stringify(payload);
+  if (raw.length <= 120) {
+    return raw;
+  }
+
+  return `${raw.slice(0, 117)}...`;
 }
 
 function describeToolOutcomesForPrompt(toolOutcomes: AgentToolOutcome[]): string {
