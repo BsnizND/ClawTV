@@ -29,6 +29,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -166,7 +167,14 @@ class MainActivity : AppCompatActivity() {
         applyVoiceProfile(voiceProfile)
         refreshVoiceProfile()
 
+        val playerAudioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
+
         player = ExoPlayer.Builder(this).build().also { exoPlayer ->
+            exoPlayer.setAudioAttributes(playerAudioAttributes, true)
+            exoPlayer.volume = 1f
             applySubtitlePreference(enabled = false, targetPlayer = exoPlayer)
             exoPlayer.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
