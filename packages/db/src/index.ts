@@ -1229,6 +1229,20 @@ export class ClawTvDatabase {
     }
 
     if (input.commandName === "resume") {
+      const resumeTarget = this.resolveResumeTarget(input.payload);
+
+      if (resumeTarget) {
+        return this.startQueueForMatchedItems({
+          sessionId: session.id,
+          commandName: input.commandName,
+          acceptedAt,
+          matchedItems: [resumeTarget],
+          source: input.source,
+          payload: input.payload,
+          message: `Resuming ${resumeTarget.showTitle ? `${resumeTarget.showTitle} - ` : ""}${resumeTarget.title}.`
+        });
+      }
+
       const queueState = this.getQueueState(session.id);
       const playbackState = queueState.current_queue_item_id ? "playing" : "idle";
       this.updatePlaybackState(session.id, playbackState, {
@@ -1359,6 +1373,34 @@ export class ClawTvDatabase {
       });
     }
 
+    if (input.commandName === "play" || input.commandName === "play-latest" || input.commandName === "shuffle") {
+      const matchedItems = this.resolveMediaItems(input.commandName, input.payload);
+
+      if (matchedItems.length === 0) {
+        return this.finishCommand({
+          commandName: input.commandName,
+          acceptedAt,
+          message: "No matching media items were found in the local catalog. Run a Plex sync first or refine the request.",
+          ok: false,
+          playbackState: this.getQueueState(session.id).player_state,
+          queueId: this.getQueueState(session.id).queue_id,
+          matchedItems: [],
+          source: input.source,
+          sessionId: session.id,
+          payload: input.payload
+        });
+      }
+
+      return this.startQueueForMatchedItems({
+        sessionId: session.id,
+        commandName: input.commandName,
+        acceptedAt,
+        matchedItems,
+        source: input.source,
+        payload: input.payload
+      });
+    }
+
     if (input.commandName === "seek") {
       const queueState = this.getQueueState(session.id);
 
@@ -1436,103 +1478,14 @@ export class ClawTvDatabase {
       });
     }
 
-    const matchedItems = this.resolveMediaItems(input.commandName, input.payload);
-
-    if (matchedItems.length === 0) {
-      return this.finishCommand({
-        commandName: input.commandName,
-        acceptedAt,
-        message: "No matching media items were found in the local catalog. Run a Plex sync first or refine the request.",
-        ok: false,
-        playbackState: this.getQueueState(session.id).player_state,
-        queueId: this.getQueueState(session.id).queue_id,
-        matchedItems: [],
-        source: input.source,
-        sessionId: session.id,
-        payload: input.payload
-      });
-    }
-
-    const queueId = randomUUID();
-    const createdAt = new Date().toISOString();
-
-    this.db.exec("BEGIN");
-
-    try {
-      this.db.prepare(`
-        INSERT INTO queues (id, session_id, created_at, created_by, mode)
-        VALUES (:id, :sessionId, :createdAt, :createdBy, :mode)
-      `).run({
-        id: queueId,
-        sessionId: session.id,
-        createdAt,
-        createdBy: input.source,
-        mode: input.commandName
-      });
-
-      const insertQueueItem = this.db.prepare(`
-        INSERT INTO queue_items (
-          id,
-          queue_id,
-          media_item_id,
-          position,
-          origin_reason,
-          requested_title,
-          created_at
-        ) VALUES (
-          :id,
-          :queueId,
-          :mediaItemId,
-          :position,
-          :originReason,
-          :requestedTitle,
-          :createdAt
-        )
-      `);
-
-      matchedItems.forEach((item, index) => {
-        insertQueueItem.run({
-          id: randomUUID(),
-          queueId,
-          mediaItemId: item.id,
-          position: index,
-          originReason: input.commandName,
-          requestedTitle: String(input.payload.title ?? input.payload.series ?? input.payload.collection ?? ""),
-          createdAt
-        });
-      });
-
-      const firstQueueItem = this.db.prepare(`
-        SELECT id
-        FROM queue_items
-        WHERE queue_id = :queueId
-        ORDER BY position ASC
-        LIMIT 1
-      `).get({ queueId }) as unknown as { id: string };
-
-      const firstResumePositionMs = this.resolveResumePositionMs(matchedItems[0]?.id ?? null);
-
-      this.updatePlaybackState(session.id, "loading", {
-        queueId,
-        currentQueueItemId: firstQueueItem.id,
-        positionMs: firstResumePositionMs,
-        incrementControlRevision: true
-      });
-
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-
     return this.finishCommand({
       commandName: input.commandName,
       acceptedAt,
-      message: `Queued ${matchedItems.length} item${matchedItems.length === 1 ? "" : "s"}.`,
-      ok: true,
-      playbackState: "loading",
-      queueId,
-      matchedItems,
+      message: "That command is not supported.",
+      ok: false,
+      playbackState: this.getQueueState(session.id).player_state,
+      queueId: this.getQueueState(session.id).queue_id,
+      matchedItems: [],
       source: input.source,
       sessionId: session.id,
       payload: input.payload
@@ -2887,6 +2840,164 @@ export class ClawTvDatabase {
     }
 
     return [];
+  }
+
+  private resolveResumeTarget(payload: Record<string, unknown>): MediaItemSummary | null {
+    const mediaItemId = String(payload.mediaItemId ?? "").trim();
+    if (mediaItemId) {
+      const mediaItem = this.lookupMediaItemsByIds([mediaItemId])[0] ?? null;
+      return mediaItem && this.resolveResumePositionMs(mediaItem.id) > 0 ? mediaItem : null;
+    }
+
+    const title = String(payload.title ?? "").trim();
+    if (!title) {
+      return null;
+    }
+
+    const row = this.db.prepare(`
+      SELECT
+        mi.id,
+        mi.title,
+        mi.media_type,
+        show_mi.title AS show_title,
+        mi.summary,
+        mi.year,
+        mi.originally_available_at,
+        mi.view_count,
+        mi.last_viewed_at,
+        mi.view_offset_ms,
+        mi.user_rating,
+        mi.audience_rating,
+        mi.critic_rating,
+        season.season_number,
+        e.episode_number,
+        e.air_date
+      FROM media_items mi
+      LEFT JOIN media_resume_state mrs ON mrs.media_item_id = mi.id
+      LEFT JOIN episodes e ON e.media_item_id = mi.id
+      LEFT JOIN media_items show_mi ON show_mi.id = e.show_id
+      LEFT JOIN seasons season ON season.media_item_id = e.season_id
+      WHERE mi.media_type IN ('movie', 'episode')
+        AND COALESCE(mrs.position_ms, mi.view_offset_ms, 0) > 0
+        AND (
+          lower(mi.title) = lower(:title)
+          OR lower(COALESCE(show_mi.title, '')) = lower(:title)
+          OR lower(mi.title) LIKE lower(:titlePattern)
+          OR lower(COALESCE(show_mi.title, '')) LIKE lower(:titlePattern)
+        )
+      ORDER BY
+        CASE
+          WHEN lower(mi.title) = lower(:title) THEN 0
+          WHEN lower(COALESCE(show_mi.title, '')) = lower(:title) THEN 1
+          WHEN lower(mi.title) LIKE lower(:titlePrefix) THEN 2
+          WHEN lower(COALESCE(show_mi.title, '')) LIKE lower(:titlePrefix) THEN 3
+          ELSE 4
+        END,
+        COALESCE(mrs.updated_at, mi.last_viewed_at, mi.originally_available_at, '') DESC,
+        mi.title ASC
+      LIMIT 1
+    `).get({
+      title,
+      titlePattern: `%${title}%`,
+      titlePrefix: `${title}%`
+    }) as unknown as MediaRow | undefined;
+
+    return row ? mapMediaRow(row) : null;
+  }
+
+  private startQueueForMatchedItems(input: {
+    sessionId: string;
+    commandName: CommandName;
+    acceptedAt: string;
+    matchedItems: MediaItemSummary[];
+    source: string;
+    payload: Record<string, unknown>;
+    message?: string;
+  }): CommandResult {
+    const queueId = randomUUID();
+    const createdAt = new Date().toISOString();
+
+    this.db.exec("BEGIN");
+
+    try {
+      this.db.prepare(`
+        INSERT INTO queues (id, session_id, created_at, created_by, mode)
+        VALUES (:id, :sessionId, :createdAt, :createdBy, :mode)
+      `).run({
+        id: queueId,
+        sessionId: input.sessionId,
+        createdAt,
+        createdBy: input.source,
+        mode: input.commandName
+      });
+
+      const insertQueueItem = this.db.prepare(`
+        INSERT INTO queue_items (
+          id,
+          queue_id,
+          media_item_id,
+          position,
+          origin_reason,
+          requested_title,
+          created_at
+        ) VALUES (
+          :id,
+          :queueId,
+          :mediaItemId,
+          :position,
+          :originReason,
+          :requestedTitle,
+          :createdAt
+        )
+      `);
+
+      input.matchedItems.forEach((item, index) => {
+        insertQueueItem.run({
+          id: randomUUID(),
+          queueId,
+          mediaItemId: item.id,
+          position: index,
+          originReason: input.commandName,
+          requestedTitle: String(input.payload.title ?? input.payload.series ?? input.payload.collection ?? ""),
+          createdAt
+        });
+      });
+
+      const firstQueueItem = this.db.prepare(`
+        SELECT id
+        FROM queue_items
+        WHERE queue_id = :queueId
+        ORDER BY position ASC
+        LIMIT 1
+      `).get({ queueId }) as unknown as { id: string };
+
+      const firstResumePositionMs = this.resolveResumePositionMs(input.matchedItems[0]?.id ?? null);
+
+      this.updatePlaybackState(input.sessionId, "loading", {
+        queueId,
+        currentQueueItemId: firstQueueItem.id,
+        positionMs: firstResumePositionMs,
+        incrementControlRevision: true
+      });
+
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    return this.finishCommand({
+      commandName: input.commandName,
+      acceptedAt: input.acceptedAt,
+      message: input.message ?? `Queued ${input.matchedItems.length} item${input.matchedItems.length === 1 ? "" : "s"}.`,
+      ok: true,
+      playbackState: "loading",
+      queueId,
+      matchedItems: input.matchedItems,
+      source: input.source,
+      sessionId: input.sessionId,
+      payload: input.payload
+    });
   }
 
   private resolveNetworkName(input: string): string | null {
