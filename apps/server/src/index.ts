@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { copyFileSync, readFileSync, existsSync, mkdirSync, readdirSync, statSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -999,7 +999,8 @@ async function probeVoiceAssistantHealth(
       prompt: "Return JSON only. {\"replyText\":\"ok\",\"expectsReply\":false,\"action\":\"none\",\"payload\":{},\"ok\":true}",
       agentId: voiceConfig.assistantId,
       timeoutSeconds: 20,
-      thinking: "low"
+      thinking: "low",
+      sessionKey: makeOpenClawEphemeralSessionKey(voiceConfig.assistantId, "clawtv-voice-health")
     });
     const durationMs = Date.now() - startedAt;
     const result: VoiceHealthResponse = rawText
@@ -2041,11 +2042,13 @@ async function runOpenClawVoiceTurn(input: {
     ...input,
     recentTurns
   });
+  const conversationScope = input.sessionId ?? input.playback.sessionId ?? null;
   const rawText = await runOpenClawJsonPrompt({
     prompt,
     agentId: input.voiceConfig.assistantId,
     timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
-    thinking: getOpenClawThinking()
+    thinking: getOpenClawThinking(),
+    sessionKey: makeOpenClawEphemeralSessionKey(input.voiceConfig.assistantId, "clawtv-voice", conversationScope)
   });
 
   if (rawText) {
@@ -2062,7 +2065,8 @@ async function runOpenClawVoiceTurn(input: {
     }),
     agentId: input.voiceConfig.assistantId,
     timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
-    thinking: getOpenClawThinking()
+    thinking: getOpenClawThinking(),
+    sessionKey: makeOpenClawEphemeralSessionKey(input.voiceConfig.assistantId, "clawtv-voice-fallback", conversationScope)
   });
   const finalFallback = fallbackRawText ? extractOpenClawReplyFromRawText(fallbackRawText) : null;
   return finalFallback ?? null;
@@ -2442,12 +2446,9 @@ async function runOpenClawJsonPrompt(input: {
   agentId: string;
   timeoutSeconds: number;
   thinking?: string | null;
+  sessionKey?: string | null;
 }): Promise<string | null> {
-  const stdout = await runOpenClawAgentCommand(input);
-  if (!stdout) {
-    return null;
-  }
-  return extractOpenClawRawText(stdout);
+  return runOpenClawReplyText(input);
 }
 
 async function runOpenClawPlainPrompt(input: {
@@ -2455,31 +2456,41 @@ async function runOpenClawPlainPrompt(input: {
   agentId: string;
   timeoutSeconds: number;
   thinking?: string | null;
+  sessionKey?: string | null;
 }): Promise<string | null> {
-  const stdout = await runOpenClawAgentCommand(input);
-  if (!stdout) {
-    return null;
-  }
-  const trimmed = stdout.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  return runOpenClawReplyText(input);
 }
 
-async function runOpenClawAgentCommand(input: {
+function makeOpenClawEphemeralSessionKey(agentId: string, purpose: string, scope?: string | null): string {
+  const normalizedScope = (scope ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const scopePart = normalizedScope.length > 0 ? `:${normalizedScope}` : "";
+  return `agent:${agentId}:${purpose}${scopePart}:${randomUUID()}`;
+}
+
+async function runOpenClawReplyText(input: {
   prompt: string;
   agentId: string;
   timeoutSeconds: number;
   thinking?: string | null;
+  sessionKey?: string | null;
 }): Promise<string | null> {
-  const command = process.env.CLAWTV_OPENCLAW_COMMAND?.trim() || "openclaw";
+  const bridgePath = process.env.CLAWTV_OPENCLAW_NATIVE_SESSION_TURN?.trim()
+    || "/Users/briansnyder/clawd/scripts/openclaw_native_session_turn.py";
   const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.agentId || "main";
   const timeoutSeconds = Number.isFinite(input.timeoutSeconds) ? input.timeoutSeconds : 90;
+  const sessionKey = input.sessionKey?.trim() || makeOpenClawEphemeralSessionKey(agentId, "clawtv");
   const args = [
-    "agent",
-    "--agent",
+    bridgePath,
+    "--agent-id",
     agentId,
+    "--session-key",
+    sessionKey,
     "--message",
     input.prompt,
-    "--timeout",
+    "--timeout-seconds",
     String(timeoutSeconds),
     "--json"
   ];
@@ -2489,23 +2500,29 @@ async function runOpenClawAgentCommand(input: {
   }
 
   try {
-    const { stdout, stderr } = await execFileAsync(command, args, {
+    const { stdout, stderr } = await execFileAsync("python3", args, {
       env: {
         ...process.env,
         PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
       },
-      maxBuffer: 2 * 1024 * 1024
+      maxBuffer: 8 * 1024 * 1024
     });
-
-    if (sawOpenClawGatewayFallback(stderr)) {
-      console.warn("OpenClaw gateway handoff fell back to embedded execution; failing closed.", {
+    const payload = JSON.parse(stdout) as {
+      status?: unknown;
+      reply?: unknown;
+      error?: unknown;
+    };
+    if (payload.status !== "ok" || typeof payload.reply !== "string" || payload.reply.trim().length === 0) {
+      console.warn("OpenClaw native voice handoff did not return a usable reply.", {
         agentId,
+        sessionKey,
+        status: payload.status,
+        error: payload.error ?? null,
         stderr: stderr.trim()
       });
       return null;
     }
-
-    return stdout;
+    return payload.reply.trim();
   } catch (error) {
     console.warn("OpenClaw voice handoff failed", error);
     return null;
@@ -2514,11 +2531,6 @@ async function runOpenClawAgentCommand(input: {
 
 function getOpenClawThinking(): string {
   return process.env.CLAWTV_OPENCLAW_THINKING?.trim() || "low";
-}
-
-function sawOpenClawGatewayFallback(stderr: string | undefined): boolean {
-  const normalized = (stderr ?? "").toLowerCase();
-  return normalized.includes("gateway agent failed; falling back to embedded");
 }
 
 function extractOpenClawRawText(stdout: string): string | null {
