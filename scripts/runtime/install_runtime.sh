@@ -45,11 +45,11 @@ cat > "${launch_agent_dst}" <<EOF
     <string>com.clawtv.server</string>
     <key>ProgramArguments</key>
     <array>
-      <string>/bin/bash</string>
-      <string>${repo_root}/scripts/runtime/run_server.sh</string>
+      <string>/opt/homebrew/bin/node</string>
+      <string>${repo_root}/scripts/runtime/launch_server.mjs</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>${repo_root}</string>
+    <string>${HOME}</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
