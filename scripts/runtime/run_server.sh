@@ -5,7 +5,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 runtime_home="${CLAWTV_HOME:-${HOME}}"
 support_dir="${runtime_home}/Library/Application Support/ClawTV"
 env_file="${support_dir}/clawtv.env"
-log_dir="${runtime_home}/Library/Logs/ClawTV"
+log_root="${CLAWTV_LOG_ROOT:-/Volumes/LaCie_6big/briansnyder/logs}"
+log_dir="${log_root}/ClawTV"
 
 # launchd gives us a tiny PATH, but both node and openclaw live under Homebrew.
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"

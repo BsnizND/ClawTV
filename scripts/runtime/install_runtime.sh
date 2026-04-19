@@ -3,7 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 support_dir="${HOME}/Library/Application Support/ClawTV"
-log_dir="${HOME}/Library/Logs/ClawTV"
+log_root="${CLAWTV_LOG_ROOT:-/Volumes/LaCie_6big/briansnyder/logs}"
+log_dir="${log_root}/ClawTV"
 launch_agent_dst="${HOME}/Library/LaunchAgents/com.clawtv.server.plist"
 env_file="${support_dir}/clawtv.env"
 uid="$(id -u)"
@@ -20,11 +21,16 @@ if [[ ! -f "${env_file}" ]]; then
   cat > "${env_file}" <<EOF
 CLAWTV_BASE_PATH=/ClawTV
 CLAWTV_DATA_DIR="${support_dir}/data"
+CLAWTV_LOG_ROOT="${log_root}"
 CLAWTV_VOICE_BACKEND=openclaw
 PLEX_BASE_URL=http://127.0.0.1:32400/
 PORT=4390
 # PLEX_TOKEN=
 EOF
+fi
+
+if ! grep -q '^CLAWTV_LOG_ROOT=' "${env_file}"; then
+  printf 'CLAWTV_LOG_ROOT="%s"\n' "${log_root}" >> "${env_file}"
 fi
 
 "${pnpm_bin}" --dir "${repo_root}" install --frozen-lockfile

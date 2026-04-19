@@ -3,7 +3,7 @@
 ## Source of truth
 - Durable ClawTV repo on `snizserver`: `/Volumes/LaCie_6big/briansnyder/repos/ClawTV`.
 - Live service URL on `snizserver`: `http://127.0.0.1:4390/ClawTV/`.
-- First log surfaces on `snizserver`: `~/Library/Logs/ClawTV/server.stdout.log` and `~/Library/Logs/ClawTV/server.stderr.log`.
+- First log surfaces on `snizserver`: `/Volumes/LaCie_6big/briansnyder/logs/ClawTV/server.stdout.log` and `/Volumes/LaCie_6big/briansnyder/logs/ClawTV/server.stderr.log`.
 
 ## Storage posture
 - On `snizserver`, durable repo and worktree storage belongs under `/Volumes/LaCie_6big/briansnyder/repos`.
