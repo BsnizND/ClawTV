@@ -168,6 +168,18 @@ interface QueueStateRow {
   updated_at: string;
 }
 
+interface QueueItemMediaRow {
+  media_item_id: string | null;
+  duration_ms: number | null;
+}
+
+interface MediaResumeStateRow {
+  media_item_id: string;
+  playback_position_ms: number;
+  updated_at: string;
+  duration_ms: number | null;
+}
+
 interface PlaybackSnapshotRow {
   session_id: string;
   queue_id: string | null;
@@ -303,6 +315,20 @@ export interface CatalogNetworkContext {
 }
 
 const EXTERNAL_LIVE_TV_RETURN_GRACE_MS = 15_000;
+const RESUME_COMPLETION_GRACE_MS = 60_000;
+const RESUME_COMPLETION_THRESHOLD_RATIO = 0.98;
+
+function isCompletedResumePosition(positionMs: number, durationMs: number | null): boolean {
+  if (!durationMs || durationMs <= 0) {
+    return false;
+  }
+
+  const normalizedPositionMs = Math.max(0, Math.round(positionMs));
+  const remainingMs = Math.max(0, durationMs - normalizedPositionMs);
+
+  return remainingMs <= RESUME_COMPLETION_GRACE_MS
+    || normalizedPositionMs >= Math.floor(durationMs * RESUME_COMPLETION_THRESHOLD_RATIO);
+}
 
 export function createDatabasePaths(rootDir: string, dataDir?: string): DatabasePaths {
   const resolvedDataDir = dataDir ?? join(rootDir, "data");
@@ -1077,8 +1103,11 @@ export class ClawTvDatabase {
 
     const now = new Date().toISOString();
     const currentState = this.getQueueState(session.id);
+    const previousQueueItemId = currentState.current_queue_item_id;
+    const previousPlaybackPositionMs = currentState.playback_position_ms;
     const requestedState = state ?? currentState.player_state;
     const playbackState = currentState.current_queue_item_id ? requestedState : "idle";
+    const playbackPositionMs = options?.positionMs ?? currentState.playback_position_ms;
 
     this.db.prepare(`
       UPDATE playback_state
@@ -1090,7 +1119,7 @@ export class ClawTvDatabase {
     `).run({
       sessionId: session.id,
       playerState: playbackState,
-      playbackPositionMs: options?.positionMs ?? currentState.playback_position_ms,
+      playbackPositionMs,
       updatedAt: now
     });
 
@@ -1102,6 +1131,14 @@ export class ClawTvDatabase {
       sessionId: session.id,
       lastSeenAt: now
     });
+
+    this.persistResumeStateTransition(
+      previousQueueItemId,
+      currentState.current_queue_item_id,
+      previousPlaybackPositionMs,
+      playbackPositionMs,
+      now
+    );
 
     this.maybeMarkExternalLiveTvInactive(session.id, playbackState, options?.currentItemId, now);
 
@@ -1276,9 +1313,11 @@ export class ClawTvDatabase {
         });
       }
 
+      const nextResumePositionMs = this.resolveResumePositionMs(nextQueueItem.media_item_id);
+
       this.updatePlaybackState(session.id, "loading", {
         currentQueueItemId: nextQueueItem.id,
-        positionMs: 0,
+        positionMs: nextResumePositionMs,
         incrementControlRevision: true
       });
 
@@ -1447,10 +1486,12 @@ export class ClawTvDatabase {
         LIMIT 1
       `).get({ queueId }) as unknown as { id: string };
 
+      const firstResumePositionMs = this.resolveResumePositionMs(matchedItems[0]?.id ?? null);
+
       this.updatePlaybackState(session.id, "loading", {
         queueId,
         currentQueueItemId: firstQueueItem.id,
-        positionMs: 0,
+        positionMs: firstResumePositionMs,
         incrementControlRevision: true
       });
 
@@ -2334,6 +2375,109 @@ export class ClawTvDatabase {
     `).get({ sessionId }) as unknown as QueueStateRow;
   }
 
+  private getQueueItemMediaRow(queueItemId: string | null): QueueItemMediaRow | null {
+    if (!queueItemId) {
+      return null;
+    }
+
+    return this.db.prepare(`
+      SELECT
+        qi.media_item_id,
+        mi.duration_ms
+      FROM queue_items qi
+      LEFT JOIN media_items mi ON mi.id = qi.media_item_id
+      WHERE qi.id = :queueItemId
+      LIMIT 1
+    `).get({ queueItemId }) as unknown as QueueItemMediaRow | null;
+  }
+
+  private clearMediaResumeState(mediaItemId: string): void {
+    this.db.prepare(`
+      DELETE FROM media_resume_state
+      WHERE media_item_id = :mediaItemId
+    `).run({ mediaItemId });
+  }
+
+  private persistMediaResumeState(mediaItemId: string | null, positionMs: number, updatedAt: string): void {
+    if (!mediaItemId) {
+      return;
+    }
+
+    const normalizedPositionMs = Math.max(0, Math.round(positionMs));
+
+    if (normalizedPositionMs <= 0) {
+      this.clearMediaResumeState(mediaItemId);
+      return;
+    }
+
+    this.db.prepare(`
+      INSERT INTO media_resume_state (
+        media_item_id,
+        playback_position_ms,
+        updated_at
+      ) VALUES (
+        :mediaItemId,
+        :playbackPositionMs,
+        :updatedAt
+      )
+      ON CONFLICT(media_item_id) DO UPDATE SET
+        playback_position_ms = excluded.playback_position_ms,
+        updated_at = excluded.updated_at
+    `).run({
+      mediaItemId,
+      playbackPositionMs: normalizedPositionMs,
+      updatedAt
+    });
+  }
+
+  private persistResumeStateTransition(
+    previousQueueItemId: string | null,
+    nextQueueItemId: string | null,
+    previousPositionMs: number,
+    nextPositionMs: number,
+    updatedAt: string
+  ): void {
+    const previousItem = this.getQueueItemMediaRow(previousQueueItemId);
+    const nextItem = this.getQueueItemMediaRow(nextQueueItemId);
+
+    if (previousItem?.media_item_id && previousItem.media_item_id !== nextItem?.media_item_id) {
+      this.persistMediaResumeState(previousItem.media_item_id, previousPositionMs, updatedAt);
+    }
+
+    if (nextItem?.media_item_id) {
+      this.persistMediaResumeState(nextItem.media_item_id, nextPositionMs, updatedAt);
+    }
+  }
+
+  private resolveResumePositionMs(mediaItemId: string | null): number {
+    if (!mediaItemId) {
+      return 0;
+    }
+
+    const row = this.db.prepare(`
+      SELECT
+        mrs.media_item_id,
+        mrs.playback_position_ms,
+        mrs.updated_at,
+        mi.duration_ms
+      FROM media_resume_state mrs
+      LEFT JOIN media_items mi ON mi.id = mrs.media_item_id
+      WHERE mrs.media_item_id = :mediaItemId
+      LIMIT 1
+    `).get({ mediaItemId }) as unknown as MediaResumeStateRow | undefined;
+
+    if (!row) {
+      return 0;
+    }
+
+    if (isCompletedResumePosition(row.playback_position_ms, row.duration_ms)) {
+      this.clearMediaResumeState(row.media_item_id);
+      return 0;
+    }
+
+    return Math.max(0, Math.round(row.playback_position_ms));
+  }
+
   private updatePlaybackState(
     sessionId: string,
     playerState: ClientPlaybackState,
@@ -2347,6 +2491,8 @@ export class ClawTvDatabase {
   ): void {
     const now = new Date().toISOString();
     const currentState = this.getQueueState(sessionId);
+    const previousQueueItemId = currentState.current_queue_item_id;
+    const previousPlaybackPositionMs = currentState.playback_position_ms;
     const queueId = options?.queueId === undefined ? currentState.queue_id : options.queueId;
     const currentQueueItemId = options?.clearCurrentQueueItem
       ? null
@@ -2388,6 +2534,14 @@ export class ClawTvDatabase {
       sessionId,
       lastSeenAt: now
     });
+
+    this.persistResumeStateTransition(
+      previousQueueItemId,
+      currentQueueItemId,
+      previousPlaybackPositionMs,
+      playbackPositionMs,
+      now
+    );
   }
 
   private issueReceiverCommand(sessionId: string, commandType: "refresh"): void {
