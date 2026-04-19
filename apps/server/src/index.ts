@@ -1687,16 +1687,22 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
         replyText = decision.executedAction.message;
       }
     } else if (decision.commandName !== "none") {
-      action = decision.commandName;
-      finalPayload = decision.payload;
-      commandOk = decision.ok;
-      commandMessage = replyText.trim() || null;
-      matchedItemCount = null;
+      const executedAction = await executeVoiceCommandDecision({
+        commandName: decision.commandName,
+        payload: decision.payload,
+        sessionId
+      });
+      action = executedAction.action;
+      finalPayload = executedAction.payload;
+      commandOk = executedAction.ok;
+      commandMessage = executedAction.message;
+      matchedItemCount = executedAction.matchedItemCount ?? null;
+      ok = executedAction.ok;
 
-      if (!replyText.trim()) {
-        replyText = decision.ok
-          ? "Done."
-          : voiceConfig.unavailableText;
+      if (!executedAction.ok) {
+        replyText = executedAction.message || voiceConfig.unavailableText;
+      } else if (!replyText.trim()) {
+        replyText = executedAction.message || "Done.";
       }
     }
   }
@@ -1745,17 +1751,57 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
   };
 }
 
+async function executeVoiceCommandDecision(input: {
+  commandName: Exclude<VoiceTurnResponse["action"], "none">;
+  payload: Record<string, unknown>;
+  sessionId: string | null;
+}): Promise<NonNullable<VoiceDecision["executedAction"]>> {
+  if (input.commandName === "live-tv-tune") {
+    try {
+      const request = parseLiveTvTunePayload(input.payload);
+      const result = await tuneLiveTv(request);
+      return {
+        action: "live-tv-tune",
+        payload: {
+          provider: request.provider,
+          channel: result.channel
+        },
+        ok: result.ok,
+        message: result.message
+      };
+    } catch (error) {
+      return {
+        action: "live-tv-tune",
+        payload: input.payload,
+        ok: false,
+        message: error instanceof Error ? error.message : "Failed to tune live TV."
+      };
+    }
+  }
+
+  const result = db.applyCommand({
+    commandName: input.commandName,
+    payload: input.payload,
+    source: "voice",
+    sessionId: input.sessionId
+  });
+  maybeClearExternalLiveTvStateForCommand(input.commandName, result.ok);
+
+  return {
+    action: input.commandName,
+    payload: input.payload,
+    ok: result.ok,
+    message: result.message,
+    matchedItemCount: result.matchedItemCount
+  };
+}
+
 async function buildConversationalReply(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
   sessionId?: string | null;
 }): Promise<VoiceDecision> {
-  const subtitleDecision = maybeBuildSubtitleVoiceDecision(input.transcript, input.playback, input.sessionId);
-  if (subtitleDecision) {
-    return subtitleDecision;
-  }
-
   if (input.voiceConfig.backend === "openclaw") {
     const openClawReply = await runOpenClawVoiceTurn({
       ...input
@@ -1780,192 +1826,6 @@ async function buildConversationalReply(input: {
     payload: {},
     expectsReply: false
   };
-}
-
-function maybeBuildSubtitleVoiceDecision(
-  transcript: string,
-  playback: PlaybackSnapshot,
-  sessionId?: string | null
-): VoiceDecision | null {
-  const normalized = transcript.toLowerCase().trim();
-  const mentionsSubtitles = /\b(subtitles|subtitle|captions|caption)\b/u.test(normalized);
-
-  if (!mentionsSubtitles) {
-    return null;
-  }
-
-  const wantsOn = [
-    /\bturn\s+on\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\b/u,
-    /\b(?:turn|switch|put)\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\s+on\b/u,
-    /\b(?:enable|show)\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\b/u,
-    /\b(?:subtitles|subtitle|captions|caption)\s+on\b/u,
-    /\bwith\s+(?:subtitles|subtitle|captions|caption)\b/u
-  ].some((pattern) => pattern.test(normalized));
-  const wantsOff = [
-    /\bturn\s+off\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\b/u,
-    /\b(?:turn|switch|shut)\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\s+off\b/u,
-    /\b(?:disable|hide|remove)\s+(?:the\s+)?(?:subtitles|subtitle|captions|caption)\b/u,
-    /\b(?:subtitles|subtitle|captions|caption)\s+off\b/u,
-    /\bno\s+(?:subtitles|subtitle|captions|caption)\b/u,
-    /\bwithout\s+(?:subtitles|subtitle|captions|caption)\b/u
-  ].some((pattern) => pattern.test(normalized));
-
-  if (wantsOn && !wantsOff) {
-    const commandName: CommandName = "subtitles-on";
-    const result = db.applyCommand({
-      commandName,
-      payload: {},
-      source: "voice",
-      sessionId: sessionId ?? playback.sessionId
-    });
-    return {
-      ok: result.ok,
-      replyText: playback.subtitlesEnabled ? "Subtitles are already on." : "Okay. Turning subtitles on.",
-      commandName,
-      payload: {},
-      expectsReply: false,
-      executedAction: {
-        action: commandName,
-        payload: {},
-        ok: result.ok,
-        message: result.message,
-        matchedItemCount: result.matchedItemCount
-      }
-    };
-  }
-
-  if (wantsOff && !wantsOn) {
-    const commandName: CommandName = "subtitles-off";
-    const result = db.applyCommand({
-      commandName,
-      payload: {},
-      source: "voice",
-      sessionId: sessionId ?? playback.sessionId
-    });
-    return {
-      ok: result.ok,
-      replyText: playback.subtitlesEnabled ? "Okay. Turning subtitles off." : "Subtitles are already off.",
-      commandName,
-      payload: {},
-      expectsReply: false,
-      executedAction: {
-        action: commandName,
-        payload: {},
-        ok: result.ok,
-        message: result.message,
-        matchedItemCount: result.matchedItemCount
-      }
-    };
-  }
-
-  return null;
-}
-
-function maybeBuildCuratorVoiceDecision(transcript: string): {
-  replyText: string;
-  commandName: VoiceTurnResponse["action"];
-  payload: Record<string, unknown>;
-  expectsReply: boolean;
-} | null {
-  const normalized = transcript.toLowerCase().trim();
-  const randomShow = extractShowRequest(normalized, [
-    /(?:play|watch|put on)\s+(?:a\s+)?random episode of\s+(.+)/u
-  ]);
-
-  if (randomShow) {
-    const recommendation = db.recommendEpisodes({
-      show: randomShow,
-      strategy: "random",
-      limit: 1
-    });
-    const topPick = recommendation.items[0];
-
-    if (!topPick) {
-      return null;
-    }
-
-    return {
-      replyText: `Let's do ${formatRecommendationTitle(topPick)}. ${topPick.reason}`,
-      commandName: "play",
-      payload: {
-        mediaItemId: topPick.item.id,
-        title: topPick.item.title
-      },
-      expectsReply: false
-    };
-  }
-
-  const highlyRatedShow = extractShowRequest(normalized, [
-    /shuffle\s+highly rated episodes of\s+(.+)/u,
-    /play\s+highly rated episodes of\s+(.+)/u
-  ]);
-
-  if (highlyRatedShow) {
-    const canonicalShow = db.recommendEpisodes({
-      show: highlyRatedShow,
-      strategy: "highly-rated",
-      limit: 1
-    }).show || highlyRatedShow;
-
-    if (normalized.includes("shuffle")) {
-      return {
-        replyText: `Okay. Shuffling strong episodes from ${canonicalShow}.`,
-        commandName: "shuffle",
-        payload: {
-          show: canonicalShow,
-          highlyRated: true,
-          limit: 12
-        },
-        expectsReply: false
-      };
-    }
-
-    const recommendation = db.recommendEpisodes({
-      show: highlyRatedShow,
-      strategy: "highly-rated",
-      limit: 1
-    });
-    const topPick = recommendation.items[0];
-    if (!topPick) {
-      return null;
-    }
-
-    return {
-      replyText: `Let's go with ${formatRecommendationTitle(topPick)}. ${topPick.reason}`,
-      commandName: "play",
-      payload: {
-        mediaItemId: topPick.item.id,
-        title: topPick.item.title
-      },
-      expectsReply: false
-    };
-  }
-
-  const shuffleShow = extractShowRequest(normalized, [
-    /shuffle\s+episodes of\s+(.+)/u,
-    /shuffle\s+(.+?)\s+episodes/u,
-    /shuffle\s+(.+)/u
-  ]);
-
-  if (shuffleShow) {
-    const canonicalShow = db.recommendEpisodes({
-      show: shuffleShow,
-      strategy: "default",
-      limit: 1
-    }).show || shuffleShow;
-
-    return {
-      replyText: `Okay. Shuffling ${canonicalShow}.`,
-      commandName: "shuffle",
-      payload: {
-        show: canonicalShow,
-        limit: 12
-      },
-      expectsReply: false
-    };
-  }
-
-  return null;
 }
 
 function extractCuratorConversationIntent(transcript: string): {
