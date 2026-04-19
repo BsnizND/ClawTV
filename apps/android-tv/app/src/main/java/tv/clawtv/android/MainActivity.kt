@@ -73,6 +73,7 @@ class MainActivity : AppCompatActivity() {
     private var receiverBaseUrl: String = BuildConfig.CLAWTV_RECEIVER_URL
     private var receiverFailoverInFlight = false
     private var currentSnapshot: PlaybackSnapshotPayload? = null
+    private var lastAppliedControlRevision: Int? = null
     private var loadedStreamUrl: String? = null
     private var lastReportedState: String? = null
     private var lastAutoAdvancedItemId: String? = null
@@ -1123,6 +1124,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun applySnapshot(snapshot: PlaybackSnapshotPayload) {
         val previousItemId = currentSnapshot?.itemId
+        val controlRevisionChanged = lastAppliedControlRevision != snapshot.controlRevision
         currentSnapshot = snapshot
         if (snapshot.itemId != previousItemId) {
             lastAutoAdvancedItemId = null
@@ -1144,6 +1146,7 @@ class MainActivity : AppCompatActivity() {
         if (streamUrl == null) {
             loadedStreamUrl = null
             player.stop()
+            lastAppliedControlRevision = snapshot.controlRevision
             showOverlay(
                 title = getString(R.string.status_idle_title),
                 message = getString(R.string.status_idle_message),
@@ -1156,11 +1159,11 @@ class MainActivity : AppCompatActivity() {
 
         val shouldReloadStream = loadedStreamUrl != streamUrl
             || snapshot.receiverCommandType == "refresh"
-            || (snapshot.controlRevisionChanged && snapshot.playbackState == "loading")
+            || (controlRevisionChanged && snapshot.playbackState == "loading")
 
         if (shouldReloadStream) {
             reloadStream(streamUrl, snapshot.playbackPositionMs.toLong(), snapshot.itemId)
-        } else if (snapshot.controlRevisionChanged && snapshot.playbackPositionMs > 0) {
+        } else if (controlRevisionChanged && snapshot.playbackPositionMs >= 0) {
             val driftMs = abs(player.currentPosition - snapshot.playbackPositionMs.toLong())
             if (driftMs > RESYNC_DRIFT_MS) {
                 player.seekTo(snapshot.playbackPositionMs.toLong())
@@ -1201,6 +1204,8 @@ class MainActivity : AppCompatActivity() {
                 player.playWhenReady = false
             }
         }
+
+        lastAppliedControlRevision = snapshot.controlRevision
     }
 
     private fun reloadStream(streamUrl: String, playbackPositionMs: Long, itemId: String?) {
@@ -1423,7 +1428,6 @@ class MainActivity : AppCompatActivity() {
             playbackState = playbackState,
             playbackPositionMs = payload.optInt("playbackPositionMs", 0),
             controlRevision = controlRevision,
-            controlRevisionChanged = currentSnapshot?.controlRevision != controlRevision,
             itemId = itemId,
             title = currentItem?.optString("title")?.takeIf { it.isNotEmpty() },
             showTitle = currentItem?.optString("showTitle")?.takeIf { it.isNotEmpty() },
@@ -1670,7 +1674,6 @@ private data class PlaybackSnapshotPayload(
     val playbackState: String,
     val playbackPositionMs: Int,
     val controlRevision: Int,
-    val controlRevisionChanged: Boolean,
     val itemId: String?,
     val title: String?,
     val showTitle: String?,
