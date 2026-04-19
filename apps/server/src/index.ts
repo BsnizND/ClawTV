@@ -2001,7 +2001,8 @@ async function runOpenClawVoiceTurn(input: {
   if (rawText) {
     const parsed = extractOpenClawReplyFromRawText(rawText);
     if (parsed) {
-      return parsed;
+      const recovered = recoverExplicitVoiceCommandFromTranscript(input.transcript, parsed);
+      return recovered ?? parsed;
     }
   }
 
@@ -2016,7 +2017,9 @@ async function runOpenClawVoiceTurn(input: {
     sessionKey: makeOpenClawEphemeralSessionKey(input.voiceConfig.assistantId, "clawtv-voice-fallback", conversationScope)
   });
   const finalFallback = fallbackRawText ? extractOpenClawReplyFromRawText(fallbackRawText) : null;
-  return finalFallback ?? null;
+  return finalFallback
+    ? (recoverExplicitVoiceCommandFromTranscript(input.transcript, finalFallback) ?? finalFallback)
+    : null;
 }
 
 function buildOpenClawPrompt(input: {
@@ -2928,6 +2931,45 @@ function normalizeVoiceCommandTranscript(value: string): string {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
+}
+
+function recoverExplicitVoiceCommandFromTranscript(
+  transcript: string,
+  parsed: {
+    ok: boolean;
+    replyText: string;
+    commandName: VoiceTurnResponse["action"];
+    payload: Record<string, unknown>;
+    expectsReply: boolean;
+    rawReplyText?: string | null;
+  }
+): typeof parsed | null {
+  if (parsed.commandName !== "none" || parsed.expectsReply) {
+    return null;
+  }
+
+  const shuffleShow = extractExplicitShuffleShowTitle(transcript);
+  if (!shuffleShow) {
+    return null;
+  }
+
+  return {
+    ...parsed,
+    ok: true,
+    replyText: "",
+    commandName: "shuffle",
+    payload: {
+      show: shuffleShow
+    }
+  };
+}
+
+function extractExplicitShuffleShowTitle(transcript: string): string | null {
+  const match = transcript.match(
+    /^\s*(?:(?:hey|hi|okay|ok|please|assistant)\s+)*(?:(?:can|could|would)\s+you\s+)?shuffle(?:\s+episodes?)?(?:\s+of)?\s+(.+?)\s*$/iu
+  );
+  const show = match?.[1]?.trim().replace(/[?.!,]+$/u, "");
+  return show && show.length > 0 ? show : null;
 }
 
 function escapeRegExp(value: string): string {
