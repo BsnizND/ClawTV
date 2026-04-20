@@ -1242,7 +1242,7 @@ class MainActivity : AppCompatActivity() {
             put("positionMs", positionMsForReport(snapshot))
             put("sessionId", snapshot.sessionId)
             put("currentItemId", snapshot.itemId)
-            put("clientFeatures", JSONArray(CLIENT_FEATURES))
+            put("clientFeatures", JSONArray(currentClientFeatures()))
         }
 
         if (!force && lastReportedState == state) {
@@ -1264,7 +1264,7 @@ class MainActivity : AppCompatActivity() {
             put("positionMs", positionMsForReport(snapshot))
             put("sessionId", snapshot.sessionId)
             put("currentItemId", snapshot.itemId)
-            put("clientFeatures", JSONArray(CLIENT_FEATURES))
+            put("clientFeatures", JSONArray(currentClientFeatures()))
         }
 
         worker.execute {
@@ -1423,13 +1423,18 @@ class MainActivity : AppCompatActivity() {
             return configuredBaseUrl.trimEnd('/')
         }
 
+        val cachedBaseUrl = receiverPreferences.getString(SONOS_CONTROL_BASE_URL_PREF_KEY, null)
+        if (!cachedBaseUrl.isNullOrBlank() && BuildConfig.CLAWTV_SONOS_ROOM_NAME.trim().isEmpty()) {
+            Log.i(TAG, "Using cached Sonos base URL $cachedBaseUrl without a configured room name")
+            return cachedBaseUrl.trimEnd('/')
+        }
+
         val configuredRoomName = BuildConfig.CLAWTV_SONOS_ROOM_NAME.trim()
         if (configuredRoomName.isEmpty()) {
             return null
         }
 
         val cachedRoomName = receiverPreferences.getString(SONOS_ROOM_NAME_PREF_KEY, null)
-        val cachedBaseUrl = receiverPreferences.getString(SONOS_CONTROL_BASE_URL_PREF_KEY, null)
         if (cachedRoomName == configuredRoomName && !cachedBaseUrl.isNullOrBlank()) {
             Log.i(TAG, "Using cached Sonos base URL $cachedBaseUrl for room=$configuredRoomName")
             return cachedBaseUrl.trimEnd('/')
@@ -1442,6 +1447,26 @@ class MainActivity : AppCompatActivity() {
             .apply()
         Log.i(TAG, "Discovered Sonos base URL $discoveredBaseUrl for room=$configuredRoomName")
         return discoveredBaseUrl
+    }
+
+    private fun currentClientFeatures(): List<String> {
+        val features = mutableListOf("launch-external-url")
+        if (supportsLocalAudioVolume()) {
+            features.add("local-audio-volume")
+        }
+        return features
+    }
+
+    private fun supportsLocalAudioVolume(): Boolean {
+        if (BuildConfig.CLAWTV_SONOS_CONTROL_BASE_URL.trim().isNotEmpty()) {
+            return true
+        }
+
+        if (!receiverPreferences.getString(SONOS_CONTROL_BASE_URL_PREF_KEY, null).isNullOrBlank()) {
+            return true
+        }
+
+        return BuildConfig.CLAWTV_SONOS_ROOM_NAME.trim().isNotEmpty()
     }
 
     private fun discoverSonosControlBaseUrl(roomName: String): String? {
@@ -1534,14 +1559,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun postSonosSoap(baseUrl: String, controlPath: String, soapAction: String, body: String): Boolean {
-        val envelope = """
-            <?xml version="1.0" encoding="utf-8"?>
-            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-              <s:Body>
-                $body
-              </s:Body>
-            </s:Envelope>
-        """.trimIndent()
+        val envelope = buildString {
+            append("""<?xml version="1.0" encoding="utf-8"?>""")
+            append('\n')
+            append("""<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">""")
+            append('\n')
+            append("  <s:Body>\n")
+            append(body.trim())
+            append('\n')
+            append("  </s:Body>\n")
+            append("</s:Envelope>")
+        }
         val envelopeBytes = envelope.toByteArray(Charsets.UTF_8)
         val connection = (URL(baseUrl.trimEnd('/') + controlPath).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -1972,7 +2000,6 @@ class MainActivity : AppCompatActivity() {
         private const val VOICE_MINIMUM_LISTEN_MS = 3_500L
         private const val SEEK_BACK_MS = 10_000
         private const val SEEK_FORWARD_MS = 30_000
-        private val CLIENT_FEATURES = listOf("launch-external-url")
         private val LOCATION_HEADER_REGEX = Regex("^location:\\s*(.+)$", setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE))
         private val XML_ROOM_NAME_REGEX = Regex("<roomName>(.*?)</roomName>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
 

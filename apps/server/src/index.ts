@@ -2225,11 +2225,15 @@ function buildOpenClawPrompt(input: {
     "For shuffle, use payload {\"show\":\"...\"} when shuffling a show, {\"collection\":\"...\"} for a collection, or {\"network\":\"...\"} for a network.",
     "For exact receiver volume, use action set-volume with payload {\"percent\":number} where percent is 0 through 100.",
     "Use action mute-volume to mute the active receiver audio and unmute-volume to restore it.",
+    input.sessionId && sessionSupportsClientFeature(input.sessionId, "local-audio-volume")
+      ? "The active receiver supports exact local audio volume control right now. Do not refuse supported volume requests; use set-volume, mute-volume, or unmute-volume."
+      : "The active receiver does not currently advertise exact local audio volume control.",
     "If you only answered a question, set action to none.",
     "If the request is ambiguous, ask one short follow-up question and set expectsReply to true.",
     "If external live TV is active, do not claim you can pause, resume, seek, or skip inside the YouTube TV app. Retuning is okay.",
     `Current playback context: ${playbackSummary}`,
     `Current external live TV state: ${externalLiveTvSummary}`,
+    `Receiver capability state: ${describeReceiverCapabilitiesForPrompt(input.sessionId ?? input.playback.sessionId ?? null)}`,
     `Last ClawTV-tuned live TV state: ${describeLastLiveTvTuneForPrompt()}`,
     input.curatorIntent && input.recommendation
       ? `Recommendation context for ${input.curatorIntent.show}: ${describeRecommendationContextForPrompt(input.recommendation)}`
@@ -2313,15 +2317,31 @@ function buildOpenClawFinalOnlyPrompt(input: {
     "For shuffle, use payload {\"show\":\"...\"} when shuffling a show, {\"collection\":\"...\"} for a collection, or {\"network\":\"...\"} for a network.",
     "For exact receiver volume, use action set-volume with payload {\"percent\":number} where percent is 0 through 100.",
     "Use action mute-volume to mute the active receiver audio and unmute-volume to restore it.",
+    input.playback.sessionId && sessionSupportsClientFeature(input.playback.sessionId, "local-audio-volume")
+      ? "The active receiver supports exact local audio volume control right now. Do not refuse supported volume requests; use set-volume, mute-volume, or unmute-volume."
+      : "The active receiver does not currently advertise exact local audio volume control.",
     "Use the supplied state and recent conversation to resolve follow-ups like yes, the other one, switch to it, and go back.",
     "If external live TV is active, do not pretend ClawTV can pause or resume the YouTube TV app itself.",
     `Current playback context: ${describePlaybackContextForPrompt(input.playback)}`,
     `Current external live TV state: ${describeExternalLiveTvStateForPrompt(input.playback.externalLiveTv)}`,
+    `Receiver capability state: ${describeReceiverCapabilitiesForPrompt(input.playback.sessionId ?? null)}`,
     describeRecentVoiceTurnsForPrompt(input.recentTurns) === "none"
       ? null
       : `Recent conversation context: ${describeRecentVoiceTurnsForPrompt(input.recentTurns)}`,
     `User said: ${input.transcript}`
   ].filter((value): value is string => Boolean(value)).join(" ");
+}
+
+function describeReceiverCapabilitiesForPrompt(sessionId: string | null): string {
+  if (!sessionId) {
+    return "No active receiver session is connected.";
+  }
+
+  return [
+    `session ${sessionId}`,
+    `external launches ${sessionSupportsClientFeature(sessionId, "launch-external-url") ? "supported" : "not supported"}`,
+    `exact local audio volume ${sessionSupportsClientFeature(sessionId, "local-audio-volume") ? "supported" : "not supported"}`
+  ].join(" | ");
 }
 
 function extractOpenClawReplyFromRawText(rawText: string): {
