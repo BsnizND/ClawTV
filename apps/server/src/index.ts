@@ -629,6 +629,30 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && routePath === "/api/catalog/show-seasons") {
+    const showId = requestUrl.searchParams.get("showId") ?? "";
+    const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
+    const offset = parseCatalogOffset(requestUrl.searchParams.get("offset"));
+    sendJson(response, 200, db.listShowSeasons({
+      showId,
+      limit,
+      offset
+    }));
+    return;
+  }
+
+  if (request.method === "GET" && routePath === "/api/catalog/season-episodes") {
+    const seasonId = requestUrl.searchParams.get("seasonId") ?? "";
+    const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
+    const offset = parseCatalogOffset(requestUrl.searchParams.get("offset"));
+    sendJson(response, 200, db.listSeasonEpisodes({
+      seasonId,
+      limit,
+      offset
+    }));
+    return;
+  }
+
   if (request.method === "GET" && routePath === "/api/catalog/movies") {
     const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
     const offset = parseCatalogOffset(requestUrl.searchParams.get("offset"));

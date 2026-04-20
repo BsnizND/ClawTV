@@ -7,6 +7,7 @@ import type {
   CatalogCollectionListResponse,
   CatalogCollectionSummary,
   CatalogLatestResponse,
+  CatalogMediaListResponse,
   CatalogMediaTypeFilter,
   CatalogMovieListResponse,
   CatalogMovieSummary,
@@ -857,6 +858,79 @@ export class ClawTvDatabase {
 
     return {
       movies: rows.map((row) => mapMovieSummaryRow(row))
+    };
+  }
+
+  listShowSeasons(input: {
+    showId: string;
+    limit?: number;
+    offset?: number;
+  }): CatalogMediaListResponse {
+    const rows = this.db.prepare(`
+      SELECT
+        season_mi.id,
+        season_mi.title,
+        season_mi.media_type,
+        show_mi.title AS show_title,
+        season_mi.year,
+        season_mi.originally_available_at,
+        season.season_number
+      FROM seasons season
+      JOIN media_items season_mi ON season_mi.id = season.media_item_id
+      JOIN media_items show_mi ON show_mi.id = season.show_id
+      WHERE season.show_id = :showId
+      ORDER BY
+        COALESCE(season.season_number, 0) ASC,
+        season_mi.title ASC
+      LIMIT :limit
+      OFFSET :offset
+    `).all({
+      showId: input.showId,
+      limit: clampCatalogLimit(input.limit),
+      offset: clampCatalogOffset(input.offset)
+    }) as unknown as MediaRow[];
+
+    return {
+      mediaType: "season",
+      items: rows.map(mapMediaRow)
+    };
+  }
+
+  listSeasonEpisodes(input: {
+    seasonId: string;
+    limit?: number;
+    offset?: number;
+  }): CatalogMediaListResponse {
+    const rows = this.db.prepare(`
+      SELECT
+        episode_mi.id,
+        episode_mi.title,
+        episode_mi.media_type,
+        show_mi.title AS show_title,
+        episode_mi.year,
+        episode_mi.originally_available_at,
+        season.season_number,
+        e.episode_number,
+        e.air_date
+      FROM episodes e
+      JOIN media_items episode_mi ON episode_mi.id = e.media_item_id
+      LEFT JOIN seasons season ON season.media_item_id = e.season_id
+      LEFT JOIN media_items show_mi ON show_mi.id = COALESCE(e.show_id, season.show_id)
+      WHERE e.season_id = :seasonId
+      ORDER BY
+        COALESCE(e.episode_number, 0) ASC,
+        episode_mi.title ASC
+      LIMIT :limit
+      OFFSET :offset
+    `).all({
+      seasonId: input.seasonId,
+      limit: clampCatalogLimit(input.limit),
+      offset: clampCatalogOffset(input.offset)
+    }) as unknown as MediaRow[];
+
+    return {
+      mediaType: "episode",
+      items: rows.map(mapMediaRow)
     };
   }
 

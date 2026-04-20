@@ -2,13 +2,16 @@ import { useEffect, useState } from "react";
 
 import type {
   CatalogLatestResponse,
+  CatalogMediaListResponse,
   CatalogMovieListResponse,
   CatalogMovieSummary,
   CatalogRecentResponse,
   CatalogShowListResponse,
   CommandResult
 } from "@clawtv/contracts";
+
 import { resolveApiUrl } from "./api";
+
 const pageSize = 6;
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -18,12 +21,14 @@ type Screen =
   | { name: "home" }
   | { name: "family"; family: MediaFamily }
   | { name: "letters"; family: MediaFamily }
-  | { name: "titles"; family: MediaFamily; mode: BrowseMode; letter?: string; page: number };
+  | { name: "titles"; family: MediaFamily; mode: BrowseMode; letter?: string; page: number }
+  | { name: "seasons"; showId: string; showTitle: string; page: number }
+  | { name: "episodes"; showId: string; showTitle: string; seasonId: string; seasonTitle: string; page: number };
 
 interface TitleCard {
   id: string;
   title: string;
-  kind: "item" | "show";
+  kind: "item" | "show" | "season";
 }
 
 export function BrowseApp() {
@@ -34,7 +39,7 @@ export function BrowseApp() {
   const [playingTitle, setPlayingTitle] = useState<string | null>(null);
 
   useEffect(() => {
-    if (screen.name !== "titles") {
+    if (!isListScreen(screen)) {
       setTitles([]);
       setLoading(false);
       setError(null);
@@ -69,14 +74,39 @@ export function BrowseApp() {
     };
   }, [screen]);
 
-  async function startPlayback(card: TitleCard) {
+  async function handleCardSelection(card: TitleCard) {
     setError(null);
     setPlayingTitle(null);
 
+    if (card.kind === "show") {
+      setScreen({
+        name: "seasons",
+        showId: card.id,
+        showTitle: card.title,
+        page: 0
+      });
+      return;
+    }
+
+    if (card.kind === "season") {
+      if (screen.name !== "seasons") {
+        setError("This season is missing its show context.");
+        return;
+      }
+
+      setScreen({
+        name: "episodes",
+        showId: screen.showId,
+        showTitle: screen.showTitle,
+        seasonId: card.id,
+        seasonTitle: card.title,
+        page: 0
+      });
+      return;
+    }
+
     try {
-      const result = card.kind === "show"
-        ? await postJson<CommandResult>("api/commands/play-latest", { series: card.title })
-        : await postJson<CommandResult>("api/commands/play", { mediaItemId: card.id });
+      const result = await postJson<CommandResult>("api/commands/play", { mediaItemId: card.id });
 
       if (!result.ok) {
         throw new Error(result.message || "Could not start playback.");
@@ -103,6 +133,21 @@ export function BrowseApp() {
 
     if (screen.name === "letters") {
       setScreen({ name: "family", family: screen.family });
+      return;
+    }
+
+    if (screen.name === "seasons") {
+      setScreen({ name: "titles", family: "tv", mode: "alphabet", letter: screen.showTitle[0]?.toUpperCase() ?? "A", page: 0 });
+      return;
+    }
+
+    if (screen.name === "episodes") {
+      setScreen({
+        name: "seasons",
+        showId: screen.showId,
+        showTitle: screen.showTitle,
+        page: 0
+      });
       return;
     }
 
@@ -171,7 +216,7 @@ export function BrowseApp() {
           </section>
         ) : null}
 
-        {screen.name === "titles" ? (
+        {isListScreen(screen) ? (
           <section className="lv-list-screen">
             <h1 className="lv-heading">{headingFor(screen)}</h1>
             {loading ? <p className="lv-message">Loading.</p> : null}
@@ -184,7 +229,7 @@ export function BrowseApp() {
                   type="button"
                   className="lv-title-button"
                   onClick={() => {
-                    void startPlayback(card);
+                    void handleCardSelection(card);
                   }}
                 >
                   {card.title}
@@ -235,6 +280,7 @@ function ActionButton(input: {
   );
 }
 
+function headingFor(screen: Exclude<Screen, { name: "home" } | { name: "family" } | { name: "letters" }>): string;
 function headingFor(screen: Screen): string {
   if (screen.name === "home") {
     return "";
@@ -248,6 +294,14 @@ function headingFor(screen: Screen): string {
     return "Choose A Letter";
   }
 
+  if (screen.name === "seasons") {
+    return `${screen.showTitle} Seasons`;
+  }
+
+  if (screen.name === "episodes") {
+    return `${screen.showTitle} ${screen.seasonTitle}`;
+  }
+
   if (screen.mode === "latest") {
     return screen.family === "movie" ? "Latest Movies" : "Latest Episodes";
   }
@@ -259,8 +313,36 @@ function headingFor(screen: Screen): string {
   return screen.letter ?? "Titles";
 }
 
-async function loadTitles(screen: Extract<Screen, { name: "titles" }>): Promise<TitleCard[]> {
+async function loadTitles(screen: Extract<Screen, { name: "titles" }> | Extract<Screen, { name: "seasons" }> | Extract<Screen, { name: "episodes" }>): Promise<TitleCard[]> {
   const offset = screen.page * pageSize;
+
+  if (screen.name === "seasons") {
+    const response = await getJson<CatalogMediaListResponse>(withSearchParams("api/catalog/show-seasons", {
+      showId: screen.showId,
+      limit: String(pageSize),
+      offset: String(offset)
+    }));
+
+    return response.items.map((season) => ({
+      id: season.id,
+      title: formatSeasonTitle(season.title, season.seasonNumber ?? null),
+      kind: "season"
+    }));
+  }
+
+  if (screen.name === "episodes") {
+    const response = await getJson<CatalogMediaListResponse>(withSearchParams("api/catalog/season-episodes", {
+      seasonId: screen.seasonId,
+      limit: String(pageSize),
+      offset: String(offset)
+    }));
+
+    return response.items.map((episode) => ({
+      id: episode.id,
+      title: formatEpisodeTitle(episode.title, episode.seasonNumber ?? null, episode.episodeNumber ?? null),
+      kind: "item"
+    }));
+  }
 
   if (screen.mode === "latest") {
     const response = await getJson<CatalogLatestResponse>(withSearchParams("api/catalog/latest", {
@@ -272,7 +354,7 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }>): Promise<
       id: item.id,
       title: screen.family === "movie"
         ? item.title
-        : item.showTitle ? `${item.showTitle} - ${item.title}` : item.title,
+        : formatShowItemTitle(item.showTitle, item.title),
       kind: "item"
     }));
   }
@@ -298,7 +380,7 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }>): Promise<
 
     return response.items.slice(offset, offset + pageSize).map((item) => ({
       id: item.id,
-      title: item.showTitle ? `${item.showTitle} - ${item.title}` : item.title,
+      title: formatShowItemTitle(item.showTitle, item.title),
       kind: "item"
     }));
   }
@@ -384,6 +466,30 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
 
 function isChoiceScreen(screen: Screen): boolean {
   return screen.name === "home" || screen.name === "family";
+}
+
+function isListScreen(screen: Screen): screen is Extract<Screen, { name: "titles" }> | Extract<Screen, { name: "seasons" }> | Extract<Screen, { name: "episodes" }> {
+  return screen.name === "titles" || screen.name === "seasons" || screen.name === "episodes";
+}
+
+function formatShowItemTitle(showTitle: string | null, title: string): string {
+  return showTitle ? `${showTitle} - ${title}` : title;
+}
+
+function formatSeasonTitle(title: string, seasonNumber: number | null): string {
+  if (typeof seasonNumber === "number") {
+    return `Season ${seasonNumber}`;
+  }
+
+  return title;
+}
+
+function formatEpisodeTitle(title: string, seasonNumber: number | null, episodeNumber: number | null): string {
+  if (typeof seasonNumber === "number" && typeof episodeNumber === "number") {
+    return `S${String(seasonNumber).padStart(2, "0")}E${String(episodeNumber).padStart(2, "0")} - ${title}`;
+  }
+
+  return title;
 }
 
 function FilmIcon() {
