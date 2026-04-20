@@ -250,6 +250,14 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if ((request.method === "GET" || request.method === "HEAD") && basePath && requestUrl.pathname === basePath) {
+    response.writeHead(308, {
+      location: `${withBasePath(basePath, "/")}${requestUrl.search}`
+    });
+    response.end();
+    return;
+  }
+
   if (request.method === "GET" && routePath === "/health") {
     sendJson(response, 200, {
       ok: true,

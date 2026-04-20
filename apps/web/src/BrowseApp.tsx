@@ -8,8 +8,7 @@ import type {
   CatalogShowListResponse,
   CommandResult
 } from "@clawtv/contracts";
-
-const apiOrigin = import.meta.env.VITE_CLAWTV_API_ORIGIN;
+import { resolveApiUrl } from "./api";
 const pageSize = 6;
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -357,16 +356,6 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return parseJsonResponse<T>(response);
 }
 
-function resolveApiUrl(path: string): string {
-  const normalizedPath = path.replace(/^\/+/u, "");
-
-  if (apiOrigin) {
-    return new URL(normalizedPath, apiOrigin).toString();
-  }
-
-  return new URL(normalizedPath, window.location.href).toString();
-}
-
 function withSearchParams(path: string, params: Record<string, string | undefined>): string {
   const url = new URL(resolveApiUrl(path));
 
@@ -376,7 +365,7 @@ function withSearchParams(path: string, params: Record<string, string | undefine
     }
   });
 
-  if (!apiOrigin) {
+  if (!import.meta.env.VITE_CLAWTV_API_ORIGIN) {
     return `${url.pathname}${url.search}`;
   }
 

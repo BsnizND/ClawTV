@@ -6,8 +6,7 @@ import type {
   PlaybackDiagnosticsUpdateRequest,
   PlaybackSnapshot
 } from "@clawtv/contracts";
-
-const apiOrigin = import.meta.env.VITE_CLAWTV_API_ORIGIN;
+import { resolveApiUrl } from "./api";
 const handledReceiverCommandStorageKey = "clawtv:last-handled-receiver-command";
 const refreshRecoveryGraceMs = 15000;
 
@@ -165,9 +164,7 @@ export function ReceiverApp() {
       return null;
     }
 
-    const url = apiOrigin
-      ? new URL(playback.streamPath, apiOrigin)
-      : new URL(playback.streamPath, window.location.href);
+    const url = new URL(resolveApiUrl(playback.streamPath));
 
     url.searchParams.set("currentItemId", playback.currentItem.id);
     return url.toString();
@@ -745,16 +742,6 @@ function sendJsonBeacon(path: string, body: unknown) {
       // Ignore best-effort state sync failures while unloading.
     });
   }
-}
-
-function resolveApiUrl(path: string): string {
-  const normalizedPath = path.replace(/^\/+/u, "");
-
-  if (apiOrigin) {
-    return new URL(normalizedPath, apiOrigin).toString();
-  }
-
-  return new URL(normalizedPath, window.location.href).toString();
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
