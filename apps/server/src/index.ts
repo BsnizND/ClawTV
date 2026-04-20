@@ -2165,10 +2165,17 @@ async function runOpenClawVoiceTurn(input: {
     recentTurns
   });
   const conversationScope = input.sessionId ?? input.playback.sessionId ?? null;
+  const explicitFallback = inferExplicitVoiceCommandFallback({
+    transcript: input.transcript,
+    networkContext: input.networkContext
+  });
+  const openClawTimeoutSeconds = explicitFallback
+    ? resolveExplicitVoiceTimeoutSeconds()
+    : Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90);
   const rawText = await runOpenClawJsonPrompt({
     prompt,
     agentId: input.voiceConfig.assistantId,
-    timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
+    timeoutSeconds: openClawTimeoutSeconds,
     thinking: getOpenClawThinking(),
     sessionKey: makeOpenClawEphemeralSessionKey(input.voiceConfig.assistantId, "clawtv-voice", conversationScope)
   });
@@ -2176,9 +2183,18 @@ async function runOpenClawVoiceTurn(input: {
   if (rawText) {
     const parsed = extractOpenClawReplyFromRawText(rawText);
     if (parsed) {
-      const recovered = recoverExplicitVoiceCommandFromTranscript(input.transcript, parsed);
+      const recovered = recoverExplicitVoiceCommandFromTranscript(input.transcript, parsed, explicitFallback);
       return recovered ?? parsed;
     }
+  }
+
+  if (explicitFallback) {
+    console.warn("OpenClaw voice handoff fell back to explicit command rescue.", {
+      transcript: input.transcript,
+      commandName: explicitFallback.commandName,
+      payload: explicitFallback.payload
+    });
+    return explicitFallback;
   }
 
   const fallbackRawText = await runOpenClawPlainPrompt({
@@ -2187,13 +2203,13 @@ async function runOpenClawVoiceTurn(input: {
       recentTurns
     }),
     agentId: input.voiceConfig.assistantId,
-    timeoutSeconds: Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90),
+    timeoutSeconds: openClawTimeoutSeconds,
     thinking: getOpenClawThinking(),
     sessionKey: makeOpenClawEphemeralSessionKey(input.voiceConfig.assistantId, "clawtv-voice-fallback", conversationScope)
   });
   const finalFallback = fallbackRawText ? extractOpenClawReplyFromRawText(fallbackRawText) : null;
   return finalFallback
-    ? (recoverExplicitVoiceCommandFromTranscript(input.transcript, finalFallback) ?? finalFallback)
+    ? (recoverExplicitVoiceCommandFromTranscript(input.transcript, finalFallback, explicitFallback) ?? finalFallback)
     : null;
 }
 
@@ -2784,6 +2800,15 @@ function parseVolumePercentPayload(payload: Record<string, unknown>): number {
   return Math.max(0, Math.min(100, Math.round(raw)));
 }
 
+function resolveExplicitVoiceTimeoutSeconds(): number {
+  const raw = Number(process.env.CLAWTV_OPENCLAW_EXPLICIT_TIMEOUT_SECONDS ?? 15);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 15;
+  }
+
+  return Math.round(raw);
+}
+
 function queueLocalAudioVolumeCommand(input: {
   commandName: "set-volume" | "mute-volume" | "unmute-volume";
   payload: Record<string, unknown>;
@@ -3178,26 +3203,50 @@ function recoverExplicitVoiceCommandFromTranscript(
     payload: Record<string, unknown>;
     expectsReply: boolean;
     rawReplyText?: string | null;
-  }
+  },
+  explicitFallback: {
+    ok: boolean;
+    replyText: string;
+    commandName: VoiceTurnResponse["action"];
+    payload: Record<string, unknown>;
+    expectsReply: boolean;
+    rawReplyText?: string | null;
+  } | null
 ): typeof parsed | null {
-  if (parsed.commandName !== "none" || parsed.expectsReply) {
-    return null;
-  }
-
-  const shuffleShow = extractExplicitShuffleShowTitle(transcript);
-  if (!shuffleShow) {
-    return null;
-  }
-
-  return {
-    ...parsed,
-    ok: true,
-    replyText: "",
-    commandName: "shuffle",
-    payload: {
-      show: shuffleShow
+  if (explicitFallback) {
+    const replyText = `${parsed.replyText} ${parsed.rawReplyText ?? ""}`.trim().toLowerCase();
+    const shouldRecover = parsed.commandName === "none"
+      && (
+        !parsed.ok
+        || parsed.expectsReply
+        || replyText.includes("can't find the clawtv checkout")
+        || replyText.includes("cannot find the clawtv checkout")
+        || replyText.includes("point the controller")
+        || replyText.includes("could not locate the clawtv repo")
+      );
+    if (shouldRecover) {
+      return explicitFallback;
     }
-  };
+  }
+
+  if (parsed.commandName === "none" && !parsed.expectsReply) {
+    const shuffleShow = extractExplicitShuffleShowTitle(transcript);
+    if (!shuffleShow) {
+      return null;
+    }
+
+    return {
+      ...parsed,
+      ok: true,
+      replyText: "",
+      commandName: "shuffle",
+      payload: {
+        show: shuffleShow
+      }
+    };
+  }
+
+  return null;
 }
 
 function extractExplicitShuffleShowTitle(transcript: string): string | null {
@@ -3206,6 +3255,129 @@ function extractExplicitShuffleShowTitle(transcript: string): string | null {
   );
   const show = match?.[1]?.trim().replace(/[?.!,]+$/u, "");
   return show && show.length > 0 ? show : null;
+}
+
+function inferExplicitVoiceCommandFallback(input: {
+  transcript: string;
+  networkContext?: ReturnType<typeof db.findNetworkContextForTranscript>;
+}): {
+  ok: boolean;
+  replyText: string;
+  commandName: VoiceTurnResponse["action"];
+  payload: Record<string, unknown>;
+  expectsReply: boolean;
+  rawReplyText?: string | null;
+} | null {
+  const transcript = input.transcript.trim();
+  if (!transcript) {
+    return null;
+  }
+
+  const volumePercent = extractExplicitVolumePercent(transcript);
+  if (volumePercent !== null) {
+    return {
+      ok: true,
+      replyText: `Volume set to ${volumePercent}%.`,
+      commandName: "set-volume",
+      payload: { percent: volumePercent },
+      expectsReply: false
+    };
+  }
+
+  if (/\bunmute\b/iu.test(transcript) || /\bturn\s+(?:the\s+)?volume\s+back\s+on\b/iu.test(transcript)) {
+    return {
+      ok: true,
+      replyText: "Volume back on.",
+      commandName: "unmute-volume",
+      payload: {},
+      expectsReply: false
+    };
+  }
+
+  if (/\bmute\b/iu.test(transcript) || /\bturn\s+(?:the\s+)?volume\s+off\b/iu.test(transcript)) {
+    return {
+      ok: true,
+      replyText: "Muting.",
+      commandName: "mute-volume",
+      payload: {},
+      expectsReply: false
+    };
+  }
+
+  const liveTvChannel = findExplicitLiveTvChannelInTranscript(transcript);
+  if (liveTvChannel) {
+    return {
+      ok: true,
+      replyText: `Opening ${liveTvChannel.label}.`,
+      commandName: "live-tv-tune",
+      payload: {
+        provider: liveTvChannel.provider,
+        channel: liveTvChannel.label
+      },
+      expectsReply: false
+    };
+  }
+
+  const network = input.networkContext?.network?.trim();
+  if (network && /\b(?:turn on|tune(?:\s+to)?|watch|switch to|go to|open)\b/iu.test(transcript)) {
+    return {
+      ok: true,
+      replyText: `Opening ${network}.`,
+      commandName: "live-tv-tune",
+      payload: {
+        provider: "youtube-tv",
+        channel: network
+      },
+      expectsReply: false
+    };
+  }
+
+  const shuffleShow = extractExplicitShuffleShowTitle(transcript);
+  if (shuffleShow) {
+    return {
+      ok: true,
+      replyText: "",
+      commandName: "shuffle",
+      payload: {
+        show: shuffleShow
+      },
+      expectsReply: false
+    };
+  }
+
+  return null;
+}
+
+function extractExplicitVolumePercent(transcript: string): number | null {
+  const percentMatch = transcript.match(
+    /\b(?:set|make|put|turn)?\s*(?:the\s+)?volume(?:\s+(?:to|at))?\s+(\d{1,3})(?:\s*(?:%|percent))\b/iu
+  );
+  if (!percentMatch) {
+    return null;
+  }
+
+  const percent = Number(percentMatch[1]);
+  if (!Number.isFinite(percent)) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function findExplicitLiveTvChannelInTranscript(transcript: string): ResolvedLiveTvChannel | null {
+  const normalizedTranscript = normalizeLiveTvChannelKey(transcript);
+
+  for (const channel of Object.values(resolveYouTubeTvChannelConfig())) {
+    const candidates = [channel.label, channel.key, ...channel.aliases];
+    if (candidates.some((candidate) => {
+      const normalizedCandidate = normalizeLiveTvChannelKey(candidate);
+      return normalizedCandidate.length > 0 && normalizedTranscript.includes(normalizedCandidate);
+    })) {
+      return channel;
+    }
+  }
+
+  return null;
 }
 
 function escapeRegExp(value: string): string {
