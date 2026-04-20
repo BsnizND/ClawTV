@@ -1,4 +1,5 @@
-const shellCache = "clawtv-shell-v3";
+const cacheVersion = new URL(self.location.href).searchParams.get("v") || "dev";
+const shellCache = `clawtv-shell-${cacheVersion}`;
 const shellPaths = [
   "./",
   "./manifest.webmanifest",
