@@ -1,18 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
 import { BrowseApp } from "./BrowseApp";
 import { ReceiverApp } from "./ReceiverApp";
 
 type AppearanceMode = "dark" | "light";
 
-const APPEARANCE_STORAGE_KEY = "clawtv-appearance-mode";
-
 export function App() {
   const url = new URL(window.location.href);
   const normalizedPath = url.pathname.replace(/\/+$/u, "");
   const isReceiverMode = url.searchParams.get("mode") === "receiver"
     || normalizedPath.endsWith("/receiver");
-  const [appearance, setAppearance] = useState<AppearanceMode>(() => resolveInitialAppearance(url));
+  const appearance = resolveInitialAppearance(url);
 
   useEffect(() => {
     document.documentElement.dataset.appearance = appearance;
@@ -23,24 +21,13 @@ export function App() {
     if (themeColorMeta) {
       themeColorMeta.setAttribute("content", themeColor);
     }
-
-    try {
-      window.localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance);
-    } catch {
-      // Ignore storage failures and keep the in-memory setting.
-    }
   }, [appearance]);
 
   if (isReceiverMode) {
     return <ReceiverApp />;
   }
 
-  return (
-    <BrowseApp
-      appearance={appearance}
-      onToggleAppearance={() => setAppearance((current) => current === "dark" ? "light" : "dark")}
-    />
-  );
+  return <BrowseApp />;
 }
 
 function resolveInitialAppearance(url: URL): AppearanceMode {
@@ -49,12 +36,7 @@ function resolveInitialAppearance(url: URL): AppearanceMode {
     return requestedAppearance;
   }
 
-  try {
-    const storedAppearance = parseAppearance(window.localStorage.getItem(APPEARANCE_STORAGE_KEY));
-    return storedAppearance ?? "dark";
-  } catch {
-    return "dark";
-  }
+  return "light";
 }
 
 function parseAppearance(value: string | null): AppearanceMode | null {
