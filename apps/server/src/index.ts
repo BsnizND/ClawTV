@@ -171,6 +171,13 @@ const youTubeTvChannelCatalog = [
     defaultUrl: "https://tv.youtube.com/watch/ll39j_Jw-yM"
   },
   {
+    key: "hgtv",
+    label: "HGTV",
+    aliases: ["hgtv", "home and garden tv", "home and garden television"],
+    provider: "youtube-tv",
+    defaultUrl: "https://tv.youtube.com/browse/hgtv-UCS0cVrPQeee86n-YZHtgjPw"
+  },
+  {
     key: "ms-now",
     label: "MS NOW",
     aliases: ["ms now", "msnow", "msnbc"],
