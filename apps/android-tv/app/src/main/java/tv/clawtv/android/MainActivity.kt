@@ -52,6 +52,7 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
@@ -1327,11 +1328,17 @@ class MainActivity : AppCompatActivity() {
         val lastHandledCommandId = receiverPreferences.getString(LAST_HANDLED_RECEIVER_COMMAND_ID_PREF_KEY, null)
 
         if (lastHandledCommandId == commandId) {
+            Log.i(TAG, "Skipping duplicate receiver audio command id=$commandId type=$commandType")
             acknowledgeReceiverCommand(commandId, snapshot.sessionId)
             return
         }
 
         worker.execute {
+            Log.i(
+                TAG,
+                "Handling receiver audio command id=$commandId type=$commandType " +
+                    "percent=${snapshot.receiverCommandVolumePercent} session=${snapshot.sessionId}"
+            )
             val handled = runCatching {
                 executeLocalAudioCommand(
                     commandType = commandType,
@@ -1351,29 +1358,33 @@ class MainActivity : AppCompatActivity() {
 
     private fun executeLocalAudioCommand(commandType: String, volumePercent: Int?): Boolean {
         val sonosTarget = resolveSonosControlBaseUrl()
+        Log.i(TAG, "Resolved receiver audio target type=$commandType sonosTarget=${sonosTarget ?: "system"}")
 
         return when (commandType) {
             "set-volume" -> {
                 val percent = volumePercent?.coerceIn(0, 100) ?: return false
-                if (sonosTarget != null) {
-                    setSonosGroupVolume(sonosTarget, percent)
+                if (sonosTarget != null && setSonosGroupVolume(sonosTarget, percent)) {
+                    true
                 } else {
+                    Log.w(TAG, "Falling back to stepped system volume set for percent=$percent")
                     setSystemVolumePercent(percent)
                 }
             }
 
             "mute-volume" -> {
-                if (sonosTarget != null) {
-                    setSonosGroupMute(sonosTarget, muted = true)
+                if (sonosTarget != null && setSonosGroupMute(sonosTarget, muted = true)) {
+                    true
                 } else {
+                    Log.w(TAG, "Falling back to system mute")
                     setSystemMuted(muted = true)
                 }
             }
 
             "unmute-volume" -> {
-                if (sonosTarget != null) {
-                    setSonosGroupMute(sonosTarget, muted = false)
+                if (sonosTarget != null && setSonosGroupMute(sonosTarget, muted = false)) {
+                    true
                 } else {
+                    Log.w(TAG, "Falling back to system unmute")
                     setSystemMuted(muted = false)
                 }
             }
@@ -1424,17 +1435,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun setSystemVolumePercent(percent: Int): Boolean {
         val manager = audioManager ?: return false
-        val maxVolume = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        if (maxVolume <= 0) {
-            return false
+        val targetPercent = percent.coerceIn(0, 100)
+        val targetSteps = ((targetPercent / 100.0) * 20.0).roundToInt().coerceIn(0, 20)
+        Log.i(TAG, "Applying stepped system volume preset percent=$targetPercent steps=$targetSteps")
+
+        repeat(25) {
+            manager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+            Thread.sleep(35L)
         }
 
-        val targetIndex = ((percent.coerceIn(0, 100) / 100.0) * maxVolume).toInt()
-        manager.setStreamVolume(
-            AudioManager.STREAM_MUSIC,
-            targetIndex.coerceIn(0, maxVolume),
-            AudioManager.FLAG_SHOW_UI
-        )
+        repeat(targetSteps) {
+            manager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
+            Thread.sleep(35L)
+        }
         return true
     }
 
@@ -1463,6 +1476,7 @@ class MainActivity : AppCompatActivity() {
         val cachedRoomName = receiverPreferences.getString(SONOS_ROOM_NAME_PREF_KEY, null)
         val cachedBaseUrl = receiverPreferences.getString(SONOS_CONTROL_BASE_URL_PREF_KEY, null)
         if (cachedRoomName == configuredRoomName && !cachedBaseUrl.isNullOrBlank()) {
+            Log.i(TAG, "Using cached Sonos base URL $cachedBaseUrl for room=$configuredRoomName")
             return cachedBaseUrl.trimEnd('/')
         }
 
@@ -1471,6 +1485,7 @@ class MainActivity : AppCompatActivity() {
             .putString(SONOS_ROOM_NAME_PREF_KEY, configuredRoomName)
             .putString(SONOS_CONTROL_BASE_URL_PREF_KEY, discoveredBaseUrl)
             .apply()
+        Log.i(TAG, "Discovered Sonos base URL $discoveredBaseUrl for room=$configuredRoomName")
         return discoveredBaseUrl
     }
 
@@ -1531,30 +1546,34 @@ class MainActivity : AppCompatActivity() {
 
     private fun setSonosGroupVolume(baseUrl: String, percent: Int): Boolean {
         val desiredVolume = percent.coerceIn(0, 100)
+        Log.i(TAG, "Setting Sonos group volume baseUrl=$baseUrl percent=$desiredVolume")
         return postSonosSoap(
             baseUrl = baseUrl,
-            controlPath = "/MediaRenderer/GroupRenderingControl/Control",
-            soapAction = "urn:schemas-upnp-org:service:GroupRenderingControl:1#SetGroupVolume",
+            controlPath = "/MediaRenderer/RenderingControl/Control",
+            soapAction = "urn:schemas-upnp-org:service:RenderingControl:1#SetVolume",
             body = """
-                <u:SetGroupVolume xmlns:u="urn:schemas-upnp-org:service:GroupRenderingControl:1">
+                <u:SetVolume xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1">
                   <InstanceID>0</InstanceID>
+                  <Channel>Master</Channel>
                   <DesiredVolume>$desiredVolume</DesiredVolume>
-                </u:SetGroupVolume>
+                </u:SetVolume>
             """.trimIndent()
         )
     }
 
     private fun setSonosGroupMute(baseUrl: String, muted: Boolean): Boolean {
         val desiredMute = if (muted) 1 else 0
+        Log.i(TAG, "Setting Sonos group mute baseUrl=$baseUrl muted=$muted")
         return postSonosSoap(
             baseUrl = baseUrl,
-            controlPath = "/MediaRenderer/GroupRenderingControl/Control",
-            soapAction = "urn:schemas-upnp-org:service:GroupRenderingControl:1#SetGroupMute",
+            controlPath = "/MediaRenderer/RenderingControl/Control",
+            soapAction = "urn:schemas-upnp-org:service:RenderingControl:1#SetMute",
             body = """
-                <u:SetGroupMute xmlns:u="urn:schemas-upnp-org:service:GroupRenderingControl:1">
+                <u:SetMute xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1">
                   <InstanceID>0</InstanceID>
+                  <Channel>Master</Channel>
                   <DesiredMute>$desiredMute</DesiredMute>
-                </u:SetGroupMute>
+                </u:SetMute>
             """.trimIndent()
         )
     }
@@ -1568,20 +1587,31 @@ class MainActivity : AppCompatActivity() {
               </s:Body>
             </s:Envelope>
         """.trimIndent()
+        val envelopeBytes = envelope.toByteArray(Charsets.UTF_8)
         val connection = (URL(baseUrl.trimEnd('/') + controlPath).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = DEFAULT_CONNECT_TIMEOUT_MS
             readTimeout = DEFAULT_READ_TIMEOUT_MS
             doOutput = true
+            setFixedLengthStreamingMode(envelopeBytes.size)
             setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
             setRequestProperty("SOAPACTION", "\"$soapAction\"")
         }
 
         return runCatching {
-            OutputStreamWriter(connection.outputStream).use { writer ->
-                writer.write(envelope)
+            connection.outputStream.use { stream ->
+                stream.write(envelopeBytes)
             }
-            connection.responseCode in 200..299
+            val responseCode = connection.responseCode
+            if (responseCode !in 200..299) {
+                val errorBody = runCatching {
+                    connection.errorStream?.bufferedReader()?.use { it.readText() }
+                }.getOrNull()
+                Log.w(TAG, "Sonos SOAP call $soapAction returned HTTP $responseCode body=${errorBody ?: "<none>"}")
+            } else {
+                Log.i(TAG, "Sonos SOAP call $soapAction succeeded with HTTP $responseCode")
+            }
+            responseCode in 200..299
         }.onFailure { error ->
             Log.w(TAG, "Sonos SOAP call failed for $soapAction", error)
         }.getOrDefault(false)
