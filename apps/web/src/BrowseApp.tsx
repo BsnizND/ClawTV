@@ -31,7 +31,10 @@ interface TitleCard {
   kind: "item" | "show" | "season";
 }
 
-export function BrowseApp() {
+export function BrowseApp(input: {
+  appearance: "dark" | "light";
+  onToggleAppearance: () => void;
+}) {
   const [screen, setScreen] = useState<Screen>({ name: "home" });
   const [titles, setTitles] = useState<TitleCard[]>([]);
   const [loading, setLoading] = useState(false);
@@ -217,6 +220,13 @@ export function BrowseApp() {
   return (
     <main className="lv-shell">
       <section className={`lv-stage${isChoiceScreen(screen) ? " lv-stage-choice" : ""}`}>
+        <button
+          type="button"
+          className="lv-appearance-button"
+          onClick={input.onToggleAppearance}
+        >
+          {input.appearance === "dark" ? "Use Light Base" : "Use Dark Base"}
+        </button>
         {screen.name !== "home" ? <button type="button" className="lv-back-button" onClick={goBack}>Back</button> : null}
 
         {error ? <p className="lv-message lv-message-error">{error}</p> : null}
