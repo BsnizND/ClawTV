@@ -166,6 +166,7 @@ interface QueueStateRow {
   control_revision: number;
   receiver_command_id: string | null;
   receiver_command_type: string | null;
+  receiver_command_payload_json: string | null;
   receiver_command_at: string | null;
   updated_at: string;
 }
@@ -192,6 +193,7 @@ interface PlaybackSnapshotRow {
   control_revision: number;
   receiver_command_id: string | null;
   receiver_command_type: string | null;
+  receiver_command_payload_json: string | null;
   receiver_command_at: string | null;
   updated_at: string;
   current_queue_position: number | null;
@@ -263,6 +265,30 @@ interface ExternalLiveTvStateRow {
   is_active: number;
   package_name: string | null;
   device_serial: string | null;
+}
+
+function parseReceiverCommandType(value: string): ReceiverCommandType {
+  return value === "launch-external-url"
+    || value === "set-volume"
+    || value === "mute-volume"
+    || value === "unmute-volume"
+    ? value
+    : "refresh";
+}
+
+function parseReceiverCommandPayload(value: string | null): Record<string, unknown> | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 interface ResolvedShowRow {
@@ -547,6 +573,7 @@ export class ClawTvDatabase {
         ps.control_revision,
         ps.receiver_command_id,
         ps.receiver_command_type,
+        ps.receiver_command_payload_json,
         ps.receiver_command_at,
         ps.updated_at,
         current_qi.position AS current_queue_position,
@@ -657,8 +684,9 @@ export class ClawTvDatabase {
       receiverCommand: row.receiver_command_id && row.receiver_command_type && row.receiver_command_at
         ? {
             id: row.receiver_command_id,
-            type: row.receiver_command_type === "refresh" ? "refresh" : "refresh",
-            issuedAt: row.receiver_command_at
+            type: parseReceiverCommandType(row.receiver_command_type),
+            issuedAt: row.receiver_command_at,
+            payload: parseReceiverCommandPayload(row.receiver_command_payload_json)
           }
         : null,
       updatedAt: row.updated_at,
@@ -1172,6 +1200,7 @@ export class ClawTvDatabase {
       SET
         receiver_command_id = NULL,
         receiver_command_type = NULL,
+        receiver_command_payload_json = NULL,
         receiver_command_at = NULL,
         updated_at = :updatedAt
       WHERE session_id = :sessionId
@@ -2253,6 +2282,7 @@ export class ClawTvDatabase {
         control_revision,
         receiver_command_id,
         receiver_command_type,
+        receiver_command_payload_json,
         receiver_command_at,
         updated_at
       ) VALUES (
@@ -2548,18 +2578,26 @@ export class ClawTvDatabase {
     );
   }
 
-  queueReceiverCommand(sessionId: string, commandType: ReceiverCommandType): PlaybackSnapshot {
+  queueReceiverCommand(
+    sessionId: string,
+    commandType: ReceiverCommandType,
+    payload?: Record<string, unknown> | null
+  ): PlaybackSnapshot {
     const session = this.getTargetSession(sessionId);
 
     if (!session) {
       return this.getPlaybackSnapshot(null);
     }
 
-    this.issueReceiverCommand(session.id, commandType);
+    this.issueReceiverCommand(session.id, commandType, payload);
     return this.getPlaybackSnapshot(session.id);
   }
 
-  private issueReceiverCommand(sessionId: string, commandType: ReceiverCommandType): void {
+  private issueReceiverCommand(
+    sessionId: string,
+    commandType: ReceiverCommandType,
+    payload?: Record<string, unknown> | null
+  ): void {
     const now = new Date().toISOString();
 
     this.db.prepare(`
@@ -2567,6 +2605,7 @@ export class ClawTvDatabase {
       SET
         receiver_command_id = :commandId,
         receiver_command_type = :commandType,
+        receiver_command_payload_json = :commandPayloadJson,
         receiver_command_at = :commandAt,
         updated_at = :updatedAt
       WHERE session_id = :sessionId
@@ -2574,6 +2613,7 @@ export class ClawTvDatabase {
       sessionId,
       commandId: randomUUID(),
       commandType,
+      commandPayloadJson: payload ? JSON.stringify(payload) : null,
       commandAt: now,
       updatedAt: now
     });

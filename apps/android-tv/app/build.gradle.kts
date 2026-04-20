@@ -16,6 +16,8 @@ val configuredReceiverFallbackUrlsJson = providers.gradleProperty("clawtvReceive
         ?.filter { it.isNotEmpty() }
         ?.joinToString(prefix = "[", postfix = "]") { "\"${escapeBuildConfig(it)}\"" }
     ?: "[]"
+val configuredSonosControlBaseUrl = providers.gradleProperty("clawtvSonosControlBaseUrl").orNull ?: ""
+val configuredSonosRoomName = providers.gradleProperty("clawtvSonosRoomName").orNull ?: ""
 val defaultVoiceAssistantName = providers.gradleProperty("clawtvVoiceAssistantName").orNull ?: "Assistant"
 val defaultVoiceAssistantId = providers.gradleProperty("clawtvVoiceAssistantId").orNull ?: "assistant"
 val defaultVoiceGreetingText = providers.gradleProperty("clawtvVoiceGreetingText").orNull ?: ""
@@ -37,6 +39,8 @@ android {
 
         buildConfigField("String", "CLAWTV_RECEIVER_URL", "\"${escapeBuildConfig(configuredReceiverUrl)}\"")
         buildConfigField("String", "CLAWTV_RECEIVER_FALLBACK_URLS_JSON", "\"${escapeBuildConfig(configuredReceiverFallbackUrlsJson)}\"")
+        buildConfigField("String", "CLAWTV_SONOS_CONTROL_BASE_URL", "\"${escapeBuildConfig(configuredSonosControlBaseUrl)}\"")
+        buildConfigField("String", "CLAWTV_SONOS_ROOM_NAME", "\"${escapeBuildConfig(configuredSonosRoomName)}\"")
         buildConfigField("boolean", "CLAWTV_VOICE_ENABLED", defaultVoiceEnabled.toString())
         buildConfigField("String", "CLAWTV_VOICE_ASSISTANT_NAME", "\"${escapeBuildConfig(defaultVoiceAssistantName)}\"")
         buildConfigField("String", "CLAWTV_VOICE_ASSISTANT_ID", "\"${escapeBuildConfig(defaultVoiceAssistantId)}\"")

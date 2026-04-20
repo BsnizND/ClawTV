@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
@@ -41,7 +42,11 @@ import org.json.JSONArray
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.Locale
 import java.util.concurrent.ExecutorService
@@ -67,6 +72,9 @@ class MainActivity : AppCompatActivity() {
 
     private val receiverPreferences by lazy {
         getSharedPreferences(RECEIVER_PREFS_NAME, Context.MODE_PRIVATE)
+    }
+    private val audioManager by lazy {
+        getSystemService(AudioManager::class.java)
     }
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -1133,10 +1141,12 @@ class MainActivity : AppCompatActivity() {
             lastAutoAdvancedItemId = null
         }
 
-        if (snapshot.receiverCommandType == "launch-external-url" && snapshot.receiverCommandId != null) {
-            handleExternalLaunchCommand(snapshot)
-        } else if (snapshot.receiverCommandId != null) {
-            acknowledgeReceiverCommand(snapshot.receiverCommandId, snapshot.sessionId)
+        if (snapshot.receiverCommandId != null) {
+            when (snapshot.receiverCommandType) {
+                "launch-external-url" -> handleExternalLaunchCommand(snapshot)
+                "set-volume", "mute-volume", "unmute-volume" -> handleLocalAudioCommand(snapshot)
+                else -> acknowledgeReceiverCommand(snapshot.receiverCommandId, snapshot.sessionId)
+            }
         }
 
         val nowPlaying = listOfNotNull(snapshot.showTitle, snapshot.title).joinToString(" - ")
@@ -1311,6 +1321,67 @@ class MainActivity : AppCompatActivity() {
         acknowledgeReceiverCommand(commandId, snapshot.sessionId)
     }
 
+    private fun handleLocalAudioCommand(snapshot: PlaybackSnapshotPayload) {
+        val commandId = snapshot.receiverCommandId ?: return
+        val commandType = snapshot.receiverCommandType ?: return
+        val lastHandledCommandId = receiverPreferences.getString(LAST_HANDLED_RECEIVER_COMMAND_ID_PREF_KEY, null)
+
+        if (lastHandledCommandId == commandId) {
+            acknowledgeReceiverCommand(commandId, snapshot.sessionId)
+            return
+        }
+
+        worker.execute {
+            val handled = runCatching {
+                executeLocalAudioCommand(
+                    commandType = commandType,
+                    volumePercent = snapshot.receiverCommandVolumePercent
+                )
+            }.onFailure { error ->
+                Log.e(TAG, "Failed to execute receiver audio command $commandType", error)
+            }.getOrDefault(false)
+
+            if (handled) {
+                receiverPreferences.edit().putString(LAST_HANDLED_RECEIVER_COMMAND_ID_PREF_KEY, commandId).apply()
+            }
+
+            acknowledgeReceiverCommand(commandId, snapshot.sessionId)
+        }
+    }
+
+    private fun executeLocalAudioCommand(commandType: String, volumePercent: Int?): Boolean {
+        val sonosTarget = resolveSonosControlBaseUrl()
+
+        return when (commandType) {
+            "set-volume" -> {
+                val percent = volumePercent?.coerceIn(0, 100) ?: return false
+                if (sonosTarget != null) {
+                    setSonosGroupVolume(sonosTarget, percent)
+                } else {
+                    setSystemVolumePercent(percent)
+                }
+            }
+
+            "mute-volume" -> {
+                if (sonosTarget != null) {
+                    setSonosGroupMute(sonosTarget, muted = true)
+                } else {
+                    setSystemMuted(muted = true)
+                }
+            }
+
+            "unmute-volume" -> {
+                if (sonosTarget != null) {
+                    setSonosGroupMute(sonosTarget, muted = false)
+                } else {
+                    setSystemMuted(muted = false)
+                }
+            }
+
+            else -> false
+        }
+    }
+
     private fun launchExternalUrl(url: String?, packageName: String?): Boolean {
         val resolvedUrl = url?.trim().orEmpty()
 
@@ -1349,6 +1420,184 @@ class MainActivity : AppCompatActivity() {
             Log.e(TAG, "Unable to launch external URL $resolvedUrl", primaryError)
             false
         }
+    }
+
+    private fun setSystemVolumePercent(percent: Int): Boolean {
+        val manager = audioManager ?: return false
+        val maxVolume = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if (maxVolume <= 0) {
+            return false
+        }
+
+        val targetIndex = ((percent.coerceIn(0, 100) / 100.0) * maxVolume).toInt()
+        manager.setStreamVolume(
+            AudioManager.STREAM_MUSIC,
+            targetIndex.coerceIn(0, maxVolume),
+            AudioManager.FLAG_SHOW_UI
+        )
+        return true
+    }
+
+    private fun setSystemMuted(muted: Boolean): Boolean {
+        val manager = audioManager ?: return false
+        val direction = if (muted) {
+            AudioManager.ADJUST_MUTE
+        } else {
+            AudioManager.ADJUST_UNMUTE
+        }
+        manager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
+        return true
+    }
+
+    private fun resolveSonosControlBaseUrl(): String? {
+        val configuredBaseUrl = BuildConfig.CLAWTV_SONOS_CONTROL_BASE_URL.trim()
+        if (configuredBaseUrl.isNotEmpty()) {
+            return configuredBaseUrl.trimEnd('/')
+        }
+
+        val configuredRoomName = BuildConfig.CLAWTV_SONOS_ROOM_NAME.trim()
+        if (configuredRoomName.isEmpty()) {
+            return null
+        }
+
+        val cachedRoomName = receiverPreferences.getString(SONOS_ROOM_NAME_PREF_KEY, null)
+        val cachedBaseUrl = receiverPreferences.getString(SONOS_CONTROL_BASE_URL_PREF_KEY, null)
+        if (cachedRoomName == configuredRoomName && !cachedBaseUrl.isNullOrBlank()) {
+            return cachedBaseUrl.trimEnd('/')
+        }
+
+        val discoveredBaseUrl = discoverSonosControlBaseUrl(configuredRoomName) ?: return null
+        receiverPreferences.edit()
+            .putString(SONOS_ROOM_NAME_PREF_KEY, configuredRoomName)
+            .putString(SONOS_CONTROL_BASE_URL_PREF_KEY, discoveredBaseUrl)
+            .apply()
+        return discoveredBaseUrl
+    }
+
+    private fun discoverSonosControlBaseUrl(roomName: String): String? {
+        val request = listOf(
+            "M-SEARCH * HTTP/1.1",
+            "HOST: 239.255.255.250:1900",
+            "MAN: \"ssdp:discover\"",
+            "MX: 1",
+            "ST: urn:schemas-upnp-org:device:ZonePlayer:1",
+            "",
+            ""
+        ).joinToString("\r\n")
+
+        val socket = DatagramSocket().apply {
+            soTimeout = SONOS_DISCOVERY_TIMEOUT_MS
+            broadcast = true
+        }
+
+        return socket.use { datagramSocket ->
+            val address = InetAddress.getByName("239.255.255.250")
+            val probe = DatagramPacket(request.toByteArray(), request.length, address, 1900)
+            datagramSocket.send(probe)
+
+            val seenLocations = linkedSetOf<String>()
+            val deadlineAt = System.currentTimeMillis() + SONOS_DISCOVERY_TIMEOUT_MS
+
+            while (System.currentTimeMillis() < deadlineAt) {
+                val buffer = ByteArray(8192)
+                val packet = DatagramPacket(buffer, buffer.size)
+                try {
+                    datagramSocket.receive(packet)
+                } catch (_: SocketTimeoutException) {
+                    break
+                }
+
+                val response = String(packet.data, 0, packet.length)
+                val location = LOCATION_HEADER_REGEX.find(response)?.groupValues?.getOrNull(1)?.trim()
+                if (!location.isNullOrEmpty()) {
+                    seenLocations.add(location)
+                }
+            }
+
+            seenLocations.firstNotNullOfOrNull { location ->
+                val description = fetchText(location) ?: return@firstNotNullOfOrNull null
+                val discoveredRoomName = XML_ROOM_NAME_REGEX.find(description)?.groupValues?.getOrNull(1)?.trim()
+                if (!discoveredRoomName.equals(roomName, ignoreCase = true)) {
+                    return@firstNotNullOfOrNull null
+                }
+
+                runCatching {
+                    val url = URL(location)
+                    "${url.protocol}://${url.host}:${url.port.takeIf { it > 0 } ?: url.defaultPort}"
+                }.getOrNull()?.trimEnd('/')
+            }
+        }
+    }
+
+    private fun setSonosGroupVolume(baseUrl: String, percent: Int): Boolean {
+        val desiredVolume = percent.coerceIn(0, 100)
+        return postSonosSoap(
+            baseUrl = baseUrl,
+            controlPath = "/MediaRenderer/GroupRenderingControl/Control",
+            soapAction = "urn:schemas-upnp-org:service:GroupRenderingControl:1#SetGroupVolume",
+            body = """
+                <u:SetGroupVolume xmlns:u="urn:schemas-upnp-org:service:GroupRenderingControl:1">
+                  <InstanceID>0</InstanceID>
+                  <DesiredVolume>$desiredVolume</DesiredVolume>
+                </u:SetGroupVolume>
+            """.trimIndent()
+        )
+    }
+
+    private fun setSonosGroupMute(baseUrl: String, muted: Boolean): Boolean {
+        val desiredMute = if (muted) 1 else 0
+        return postSonosSoap(
+            baseUrl = baseUrl,
+            controlPath = "/MediaRenderer/GroupRenderingControl/Control",
+            soapAction = "urn:schemas-upnp-org:service:GroupRenderingControl:1#SetGroupMute",
+            body = """
+                <u:SetGroupMute xmlns:u="urn:schemas-upnp-org:service:GroupRenderingControl:1">
+                  <InstanceID>0</InstanceID>
+                  <DesiredMute>$desiredMute</DesiredMute>
+                </u:SetGroupMute>
+            """.trimIndent()
+        )
+    }
+
+    private fun postSonosSoap(baseUrl: String, controlPath: String, soapAction: String, body: String): Boolean {
+        val envelope = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+              <s:Body>
+                $body
+              </s:Body>
+            </s:Envelope>
+        """.trimIndent()
+        val connection = (URL(baseUrl.trimEnd('/') + controlPath).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = DEFAULT_CONNECT_TIMEOUT_MS
+            readTimeout = DEFAULT_READ_TIMEOUT_MS
+            doOutput = true
+            setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
+            setRequestProperty("SOAPACTION", "\"$soapAction\"")
+        }
+
+        return runCatching {
+            OutputStreamWriter(connection.outputStream).use { writer ->
+                writer.write(envelope)
+            }
+            connection.responseCode in 200..299
+        }.onFailure { error ->
+            Log.w(TAG, "Sonos SOAP call failed for $soapAction", error)
+        }.getOrDefault(false)
+    }
+
+    private fun fetchText(url: String): String? {
+        return runCatching {
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = DEFAULT_CONNECT_TIMEOUT_MS
+                readTimeout = DEFAULT_READ_TIMEOUT_MS
+            }
+            connection.inputStream.use { stream ->
+                BufferedReader(InputStreamReader(stream)).readText()
+            }
+        }.getOrNull()
     }
 
     private fun requestJson(path: String, readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS): JSONObject {
@@ -1512,6 +1761,8 @@ class MainActivity : AppCompatActivity() {
             showTitle = currentItem?.optString("showTitle")?.takeIf { it.isNotEmpty() },
             receiverCommandId = receiverCommand?.optString("id")?.takeIf { it.isNotEmpty() },
             receiverCommandType = receiverCommand?.optString("type")?.takeIf { it.isNotEmpty() },
+            receiverCommandVolumePercent = receiverCommand?.optJSONObject("payload")?.optInt("percent")
+                ?.takeIf { receiverCommand.optJSONObject("payload")?.has("percent") == true },
             externalLiveTvUrl = externalLiveTv?.optString("launchedUrl")?.takeIf { it.isNotEmpty() },
             externalLiveTvPackageName = externalLiveTv?.optString("packageName")?.takeIf { it.isNotEmpty() },
             streamUrl = if (itemId != null && streamPath != null) resolveDirectStreamUrl(itemId) else null
@@ -1718,12 +1969,15 @@ class MainActivity : AppCompatActivity() {
         private const val RECEIVER_PREFS_NAME = "clawtv_receiver"
         private const val RECEIVER_URL_PREF_KEY = "receiver_url"
         private const val LAST_HANDLED_RECEIVER_COMMAND_ID_PREF_KEY = "last_handled_receiver_command_id"
+        private const val SONOS_CONTROL_BASE_URL_PREF_KEY = "sonos_control_base_url"
+        private const val SONOS_ROOM_NAME_PREF_KEY = "sonos_room_name"
         private const val REQUEST_RECORD_AUDIO_PERMISSION = 1001
         private const val POLL_INTERVAL_MS = 2_000L
         private const val POSITION_SYNC_INTERVAL_MS = 5_000L
         private const val RESYNC_DRIFT_MS = 5_000L
         private const val DEFAULT_CONNECT_TIMEOUT_MS = 5_000
         private const val DEFAULT_READ_TIMEOUT_MS = 5_000
+        private const val SONOS_DISCOVERY_TIMEOUT_MS = 1_500
         private const val VOICE_TURN_TIMEOUT_MS = 120_000
         private const val VOICE_FOLLOW_UP_DELAY_MS = 850L
         private const val VOICE_FOLLOW_UP_DISMISS_MS = 450L
@@ -1733,7 +1987,9 @@ class MainActivity : AppCompatActivity() {
         private const val VOICE_MINIMUM_LISTEN_MS = 3_500L
         private const val SEEK_BACK_MS = 10_000
         private const val SEEK_FORWARD_MS = 30_000
-        private val CLIENT_FEATURES = listOf("launch-external-url")
+        private val CLIENT_FEATURES = listOf("launch-external-url", "local-audio-volume")
+        private val LOCATION_HEADER_REGEX = Regex("^location:\\s*(.+)$", setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE))
+        private val XML_ROOM_NAME_REGEX = Regex("<roomName>(.*?)</roomName>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
 
         private fun playbackStateLabel(playbackState: Int): String {
             return when (playbackState) {
@@ -1763,6 +2019,7 @@ private data class PlaybackSnapshotPayload(
     val showTitle: String?,
     val receiverCommandId: String?,
     val receiverCommandType: String?,
+    val receiverCommandVolumePercent: Int?,
     val externalLiveTvUrl: String?,
     val externalLiveTvPackageName: String?,
     val streamUrl: String?

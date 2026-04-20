@@ -19,14 +19,25 @@ export type MediaType = "show" | "season" | "episode" | "movie";
 export type CatalogMediaTypeFilter = MediaType | "any";
 export type PlaybackClientMode = "idle" | "native-hls" | "hls.js" | "unsupported";
 export type PlaybackAutoplayStatus = "unknown" | "started" | "blocked" | "failed";
-export type ReceiverCommandType = "refresh" | "launch-external-url";
-export type ReceiverClientFeature = "launch-external-url";
+export type ReceiverCommandType =
+  | "refresh"
+  | "launch-external-url"
+  | "set-volume"
+  | "mute-volume"
+  | "unmute-volume";
+export type ReceiverClientFeature = "launch-external-url" | "local-audio-volume";
 export type VoiceReplyMode = "client-tts" | "server-audio" | "none";
 export type VoiceSttMode = "shield" | "server";
 export type VoiceBackendMode = "mock" | "openclaw";
 export type RecommendationStrategy = "default" | "random" | "highly-rated";
 export type LiveTvProvider = "youtube-tv";
-export type VoiceActionName = CommandName | "live-tv-tune" | "none";
+export type VoiceActionName =
+  | CommandName
+  | "live-tv-tune"
+  | "set-volume"
+  | "mute-volume"
+  | "unmute-volume"
+  | "none";
 
 export interface SessionSummary {
   id: string;
@@ -148,6 +159,7 @@ export interface ReceiverCommand {
   id: string;
   type: ReceiverCommandType;
   issuedAt: string;
+  payload: Record<string, unknown> | null;
 }
 
 export interface CommandResult {

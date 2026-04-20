@@ -1323,7 +1323,9 @@ function parseReceiverClientFeatures(value: unknown): ReceiverClientFeature[] {
     return [];
   }
 
-  return value.filter((feature): feature is ReceiverClientFeature => feature === "launch-external-url");
+  return value.filter((feature): feature is ReceiverClientFeature =>
+    feature === "launch-external-url" || feature === "local-audio-volume"
+  );
 }
 
 function updateSessionClientFeatures(sessionId: string | undefined, features: ReceiverClientFeature[]): void {
@@ -1929,6 +1931,29 @@ async function executeVoiceCommandDecision(input: {
     }
   }
 
+  if (input.commandName === "set-volume" || input.commandName === "mute-volume" || input.commandName === "unmute-volume") {
+    try {
+      const result = queueLocalAudioVolumeCommand({
+        commandName: input.commandName,
+        payload: input.payload,
+        sessionId: input.sessionId
+      });
+      return {
+        action: input.commandName,
+        payload: result.payload,
+        ok: result.ok,
+        message: result.message
+      };
+    } catch (error) {
+      return {
+        action: input.commandName,
+        payload: input.payload,
+        ok: false,
+        message: error instanceof Error ? error.message : "Failed to control receiver volume."
+      };
+    }
+  }
+
   const normalizedPayload = normalizeVoiceCommandPayload(input.commandName, input.payload);
   const result = db.applyCommand({
     commandName: input.commandName,
@@ -2192,7 +2217,7 @@ function buildOpenClawPrompt(input: {
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
     "Return JSON only.",
-    "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|subtitles-on|subtitles-off|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
+    "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|subtitles-on|subtitles-off|live-tv-tune|set-volume|mute-volume|unmute-volume\",\"payload\":{},\"ok\":boolean}",
     "Keep replyText warm, concise, and human.",
     "Use the supplied Playback and Live TV state directly when it already answers the user.",
     "External live TV state is handoff memory, not live observation. Never say the user is definitely still on that channel or that you are watching it with them.",
@@ -2200,6 +2225,8 @@ function buildOpenClawPrompt(input: {
     "If you change playback, subtitle state, or retune live TV, do it through clawtv-control before replying and set action to what you completed.",
     "If the user asks to resume a named title that is not the current item, use action resume with payload {\"title\":\"...\"}. ClawTV can resume saved title progress even when playback is currently idle.",
     "For shuffle, use payload {\"show\":\"...\"} when shuffling a show, {\"collection\":\"...\"} for a collection, or {\"network\":\"...\"} for a network.",
+    "For exact receiver volume, use action set-volume with payload {\"percent\":number} where percent is 0 through 100.",
+    "Use action mute-volume to mute the active receiver audio and unmute-volume to restore it.",
     "If you only answered a question, set action to none.",
     "If the request is ambiguous, ask one short follow-up question and set expectsReply to true.",
     "If external live TV is active, do not claim you can pause, resume, seek, or skip inside the YouTube TV app. Retuning is okay.",
@@ -2280,12 +2307,14 @@ function buildOpenClawFinalOnlyPrompt(input: {
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
     "Return JSON only.",
-    "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|subtitles-on|subtitles-off|live-tv-tune\",\"payload\":{},\"ok\":boolean}",
+    "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|subtitles-on|subtitles-off|live-tv-tune|set-volume|mute-volume|unmute-volume\",\"payload\":{},\"ok\":boolean}",
     "Keep the reply warm, concise, and direct.",
     "External live TV state is handoff memory, not live observation. Never say the user is definitely still on that channel or that you are watching it with them.",
     "Use clawtv-control when you need authoritative ClawTV state or need to perform a ClawTV action. Never call clawtv-control voice-turn from inside this handoff.",
     "If the user asks to resume a named title that is not currently playing, use commandName resume with payload {\"title\":\"...\"}. ClawTV can resume saved title progress even while playback is idle.",
     "For shuffle, use payload {\"show\":\"...\"} when shuffling a show, {\"collection\":\"...\"} for a collection, or {\"network\":\"...\"} for a network.",
+    "For exact receiver volume, use action set-volume with payload {\"percent\":number} where percent is 0 through 100.",
+    "Use action mute-volume to mute the active receiver audio and unmute-volume to restore it.",
     "Use the supplied state and recent conversation to resolve follow-ups like yes, the other one, switch to it, and go back.",
     "If external live TV is active, do not pretend ClawTV can pause or resume the YouTube TV app itself.",
     `Current playback context: ${describePlaybackContextForPrompt(input.playback)}`,
@@ -2722,6 +2751,9 @@ function parseVoiceCommandName(value: unknown): VoiceTurnResponse["action"] {
     || value === "subtitles-on"
     || value === "subtitles-off"
     || value === "live-tv-tune"
+    || value === "set-volume"
+    || value === "mute-volume"
+    || value === "unmute-volume"
     ? value
     : "none";
 }
@@ -2735,6 +2767,60 @@ function parseLiveTvTunePayload(payload: Record<string, unknown>): LiveTvTuneReq
   return {
     provider: parseLiveTvProvider(payload.provider),
     channel
+  };
+}
+
+function parseVolumePercentPayload(payload: Record<string, unknown>): number {
+  const raw = typeof payload.percent === "number"
+    ? payload.percent
+    : typeof payload.percent === "string"
+      ? Number(payload.percent)
+      : Number.NaN;
+
+  if (!Number.isFinite(raw)) {
+    throw new Error("The volume request did not include a percent between 0 and 100.");
+  }
+
+  return Math.max(0, Math.min(100, Math.round(raw)));
+}
+
+function queueLocalAudioVolumeCommand(input: {
+  commandName: "set-volume" | "mute-volume" | "unmute-volume";
+  payload: Record<string, unknown>;
+  sessionId: string | null;
+}): {
+  ok: boolean;
+  payload: Record<string, unknown>;
+  message: string;
+} {
+  if (!input.sessionId) {
+    throw new Error("No active receiver is connected for local volume control.");
+  }
+
+  if (!sessionSupportsClientFeature(input.sessionId, "local-audio-volume")) {
+    throw new Error("The active receiver does not advertise local volume control support yet.");
+  }
+
+  if (input.commandName === "set-volume") {
+    const percent = parseVolumePercentPayload(input.payload);
+    db.queueReceiverCommand(input.sessionId, "set-volume", { percent });
+    return {
+      ok: true,
+      payload: { percent },
+      message: `Set the active receiver volume to ${percent}%.`
+    };
+  }
+
+  db.queueReceiverCommand(
+    input.sessionId,
+    input.commandName === "mute-volume" ? "mute-volume" : "unmute-volume"
+  );
+  return {
+    ok: true,
+    payload: {},
+    message: input.commandName === "mute-volume"
+      ? "Muted the active receiver audio."
+      : "Unmuted the active receiver audio."
   };
 }
 
