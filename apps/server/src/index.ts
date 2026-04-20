@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { copyFileSync, readFileSync, existsSync, mkdirSync, readdirSync, statSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -3681,7 +3681,10 @@ function serveStaticAsset(requestPath: string, response: ServerResponse): boolea
     const indexPath = join(webDistDir, "index.html");
 
     if (existsSync(indexPath) && !relativePath.includes(".")) {
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.writeHead(200, {
+        "cache-control": "no-store, max-age=0",
+        "content-type": "text/html; charset=utf-8"
+      });
       response.end(readFileSync(indexPath));
       return true;
     }
@@ -3689,11 +3692,34 @@ function serveStaticAsset(requestPath: string, response: ServerResponse): boolea
     return false;
   }
 
-  response.writeHead(200, {
-    "content-type": contentTypeFor(assetPath)
-  });
+  response.writeHead(200, staticAssetHeaders(assetPath));
   response.end(readFileSync(assetPath));
   return true;
+}
+
+function staticAssetHeaders(assetPath: string): Record<string, string> {
+  const fileName = basename(assetPath);
+  const extension = extname(assetPath);
+  const isFingerprintedAsset = /\/assets\/index-[^/]+\.[a-z0-9]+$/iu.test(assetPath);
+
+  if (isFingerprintedAsset) {
+    return {
+      "cache-control": "public, max-age=31536000, immutable",
+      "content-type": contentTypeFor(assetPath)
+    };
+  }
+
+  if (fileName === "sw.js" || fileName === "manifest.webmanifest" || extension === ".html") {
+    return {
+      "cache-control": "no-store, max-age=0",
+      "content-type": contentTypeFor(assetPath)
+    };
+  }
+
+  return {
+    "cache-control": "public, max-age=300",
+    "content-type": contentTypeFor(assetPath)
+  };
 }
 
 function resolveSafeAssetPath(root: string, relativeFilePath: string): string | null {
