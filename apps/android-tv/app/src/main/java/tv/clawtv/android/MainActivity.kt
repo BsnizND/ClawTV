@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
@@ -52,7 +51,6 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.abs
-import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
@@ -73,9 +71,6 @@ class MainActivity : AppCompatActivity() {
 
     private val receiverPreferences by lazy {
         getSharedPreferences(RECEIVER_PREFS_NAME, Context.MODE_PRIVATE)
-    }
-    private val audioManager by lazy {
-        getSystemService(AudioManager::class.java)
     }
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -1359,34 +1354,23 @@ class MainActivity : AppCompatActivity() {
     private fun executeLocalAudioCommand(commandType: String, volumePercent: Int?): Boolean {
         val sonosTarget = resolveSonosControlBaseUrl()
         Log.i(TAG, "Resolved receiver audio target type=$commandType sonosTarget=${sonosTarget ?: "system"}")
+        if (sonosTarget == null) {
+            Log.e(TAG, "Rejecting local audio command $commandType because no Sonos control target is configured.")
+            return false
+        }
 
         return when (commandType) {
             "set-volume" -> {
                 val percent = volumePercent?.coerceIn(0, 100) ?: return false
-                if (sonosTarget != null && setSonosGroupVolume(sonosTarget, percent)) {
-                    true
-                } else {
-                    Log.w(TAG, "Falling back to stepped system volume set for percent=$percent")
-                    setSystemVolumePercent(percent)
-                }
+                setSonosGroupVolume(sonosTarget, percent)
             }
 
             "mute-volume" -> {
-                if (sonosTarget != null && setSonosGroupMute(sonosTarget, muted = true)) {
-                    true
-                } else {
-                    Log.w(TAG, "Falling back to system mute")
-                    setSystemMuted(muted = true)
-                }
+                setSonosGroupMute(sonosTarget, muted = true)
             }
 
             "unmute-volume" -> {
-                if (sonosTarget != null && setSonosGroupMute(sonosTarget, muted = false)) {
-                    true
-                } else {
-                    Log.w(TAG, "Falling back to system unmute")
-                    setSystemMuted(muted = false)
-                }
+                setSonosGroupMute(sonosTarget, muted = false)
             }
 
             else -> false
@@ -1431,35 +1415,6 @@ class MainActivity : AppCompatActivity() {
             Log.e(TAG, "Unable to launch external URL $resolvedUrl", primaryError)
             false
         }
-    }
-
-    private fun setSystemVolumePercent(percent: Int): Boolean {
-        val manager = audioManager ?: return false
-        val targetPercent = percent.coerceIn(0, 100)
-        val targetSteps = ((targetPercent / 100.0) * 20.0).roundToInt().coerceIn(0, 20)
-        Log.i(TAG, "Applying stepped system volume preset percent=$targetPercent steps=$targetSteps")
-
-        repeat(25) {
-            manager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
-            Thread.sleep(35L)
-        }
-
-        repeat(targetSteps) {
-            manager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
-            Thread.sleep(35L)
-        }
-        return true
-    }
-
-    private fun setSystemMuted(muted: Boolean): Boolean {
-        val manager = audioManager ?: return false
-        val direction = if (muted) {
-            AudioManager.ADJUST_MUTE
-        } else {
-            AudioManager.ADJUST_UNMUTE
-        }
-        manager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
-        return true
     }
 
     private fun resolveSonosControlBaseUrl(): String? {
@@ -2017,7 +1972,7 @@ class MainActivity : AppCompatActivity() {
         private const val VOICE_MINIMUM_LISTEN_MS = 3_500L
         private const val SEEK_BACK_MS = 10_000
         private const val SEEK_FORWARD_MS = 30_000
-        private val CLIENT_FEATURES = listOf("launch-external-url", "local-audio-volume")
+        private val CLIENT_FEATURES = listOf("launch-external-url")
         private val LOCATION_HEADER_REGEX = Regex("^location:\\s*(.+)$", setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE))
         private val XML_ROOM_NAME_REGEX = Regex("<roomName>(.*?)</roomName>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
 
