@@ -86,6 +86,11 @@ button {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.lv-family-grid {
+  min-height: calc(100vh - 40px);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .lv-action-button,
 .lv-title-button,
 .lv-back-button {
@@ -272,7 +277,8 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .lv-split-grid {
+  .lv-split-grid,
+  .lv-family-grid {
     grid-template-columns: 1fr;
     min-height: auto;
   }

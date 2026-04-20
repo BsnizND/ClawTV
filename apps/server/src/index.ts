@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import type {
+  CatalogLatestResponse,
   CatalogRecommendationResponse,
   CatalogMediaTypeFilter,
   CatalogMovieListResponse,
@@ -678,6 +679,16 @@ const server = createServer(async (request, response) => {
       mediaType,
       limit
     }));
+    return;
+  }
+
+  if (request.method === "GET" && routePath === "/api/catalog/latest") {
+    const mediaType = parseCatalogMediaType(requestUrl.searchParams.get("type"));
+    const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
+    sendJson(response, 200, db.listLatest({
+      mediaType,
+      limit
+    }) satisfies CatalogLatestResponse);
     return;
   }
 

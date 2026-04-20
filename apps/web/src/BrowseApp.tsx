@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type {
+  CatalogLatestResponse,
   CatalogMovieListResponse,
   CatalogMovieSummary,
   CatalogRecentResponse,
@@ -13,7 +14,7 @@ const pageSize = 6;
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 type MediaFamily = "movie" | "tv";
-type BrowseMode = "recent" | "alphabet";
+type BrowseMode = "latest" | "recent" | "alphabet";
 type Screen =
   | { name: "home" }
   | { name: "family"; family: MediaFamily }
@@ -106,7 +107,7 @@ export function BrowseApp() {
       return;
     }
 
-    if (screen.mode === "recent") {
+    if (screen.mode === "latest" || screen.mode === "recent") {
       setScreen({ name: "family", family: screen.family });
       return;
     }
@@ -140,9 +141,14 @@ export function BrowseApp() {
         ) : null}
 
         {screen.name === "family" ? (
-          <section className="lv-split-grid">
+          <section className="lv-grid lv-family-grid">
             <ActionButton
-              label={screen.family === "movie" ? "New Additions" : "Latest Episodes"}
+              label={screen.family === "movie" ? "Latest Movies" : "Latest Episodes"}
+              split
+              onClick={() => setScreen({ name: "titles", family: screen.family, mode: "latest", page: 0 })}
+            />
+            <ActionButton
+              label={screen.family === "movie" ? "Recently Added Movies" : "Recently Added Episodes"}
               split
               onClick={() => setScreen({ name: "titles", family: screen.family, mode: "recent", page: 0 })}
             />
@@ -243,8 +249,12 @@ function headingFor(screen: Screen): string {
     return "Choose A Letter";
   }
 
+  if (screen.mode === "latest") {
+    return screen.family === "movie" ? "Latest Movies" : "Latest Episodes";
+  }
+
   if (screen.mode === "recent") {
-    return screen.family === "movie" ? "New Additions" : "Latest Episodes";
+    return screen.family === "movie" ? "Recently Added Movies" : "Recently Added Episodes";
   }
 
   return screen.letter ?? "Titles";
@@ -252,6 +262,21 @@ function headingFor(screen: Screen): string {
 
 async function loadTitles(screen: Extract<Screen, { name: "titles" }>): Promise<TitleCard[]> {
   const offset = screen.page * pageSize;
+
+  if (screen.mode === "latest") {
+    const response = await getJson<CatalogLatestResponse>(withSearchParams("api/catalog/latest", {
+      type: screen.family === "movie" ? "movie" : "episode",
+      limit: String((screen.page + 1) * pageSize)
+    }));
+
+    return response.items.slice(offset, offset + pageSize).map((item) => ({
+      id: item.id,
+      title: screen.family === "movie"
+        ? item.title
+        : item.showTitle ? `${item.showTitle} - ${item.title}` : item.title,
+      kind: "item"
+    }));
+  }
 
   if (screen.family === "movie" && screen.mode === "recent") {
     const response = await getJson<CatalogRecentResponse>(withSearchParams("api/catalog/recently-added", {

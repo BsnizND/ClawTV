@@ -266,10 +266,13 @@ export interface CatalogNetworkShowsResponse {
   shows: CatalogNetworkShowSummary[];
 }
 
-export interface CatalogRecentResponse {
+export interface CatalogMediaListResponse {
   mediaType: CatalogMediaTypeFilter;
   items: MediaItemSummary[];
 }
+
+export type CatalogRecentResponse = CatalogMediaListResponse;
+export type CatalogLatestResponse = CatalogMediaListResponse;
 
 export interface EpisodeRecommendation {
   item: MediaItemSummary;

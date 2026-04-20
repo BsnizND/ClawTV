@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   CatalogCollectionListResponse,
   CatalogCollectionSummary,
+  CatalogLatestResponse,
   CatalogMediaTypeFilter,
   CatalogMovieListResponse,
   CatalogMovieSummary,
@@ -1003,6 +1004,52 @@ export class ClawTvDatabase {
       WHERE (:mediaType IS NULL OR mi.media_type = :mediaType)
       ORDER BY
         COALESCE(mi.added_at, mi.updated_at, mi.originally_available_at) DESC,
+        mi.title ASC
+      LIMIT :limit
+    `).all({
+      mediaType: mediaTypeFilter,
+      limit: clampCatalogLimit(input?.limit)
+    }) as unknown as MediaRow[];
+
+    return {
+      mediaType,
+      items: rows.map(mapMediaRow)
+    };
+  }
+
+  listLatest(input?: {
+    mediaType?: CatalogMediaTypeFilter;
+    limit?: number;
+  }): CatalogLatestResponse {
+    const mediaType = input?.mediaType ?? "any";
+    const mediaTypeFilter = mediaType === "any" ? null : mediaType;
+    const rows = this.db.prepare(`
+      SELECT
+        mi.id,
+        mi.title,
+        mi.media_type,
+        show_mi.title AS show_title,
+        mi.year,
+        mi.originally_available_at,
+        mi.view_count,
+        mi.last_viewed_at,
+        mi.view_offset_ms,
+        mi.user_rating,
+        mi.audience_rating,
+        mi.critic_rating,
+        season.season_number,
+        e.episode_number,
+        e.air_date
+      FROM media_items mi
+      LEFT JOIN episodes e ON e.media_item_id = mi.id
+      LEFT JOIN seasons season ON season.media_item_id = e.season_id
+      LEFT JOIN media_items show_mi ON show_mi.id = e.show_id
+      WHERE (:mediaType IS NULL OR mi.media_type = :mediaType)
+      ORDER BY
+        COALESCE(e.air_date, mi.originally_available_at, mi.added_at, mi.updated_at) DESC,
+        COALESCE(show_mi.title, mi.title) ASC,
+        COALESCE(season.season_number, 0) DESC,
+        COALESCE(e.episode_number, 0) DESC,
         mi.title ASC
       LIMIT :limit
     `).all({
