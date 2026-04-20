@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type {
   CatalogLatestResponse,
@@ -35,37 +35,63 @@ export function BrowseApp() {
   const [screen, setScreen] = useState<Screen>({ name: "home" });
   const [titles, setTitles] = useState<TitleCard[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [playingTitle, setPlayingTitle] = useState<string | null>(null);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const listKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isListScreen(screen)) {
       setTitles([]);
       setLoading(false);
+      setLoadingMore(false);
+      setHasMore(false);
       setError(null);
+      listKeyRef.current = null;
       return;
     }
 
     let cancelled = false;
-    setLoading(true);
+    const currentListKey = getListKey(screen);
+    const append = listKeyRef.current === currentListKey && screen.page > 0;
+
     setError(null);
-    setPlayingTitle(null);
+    setHasMore(false);
+
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setTitles([]);
+      setLoading(true);
+      setLoadingMore(false);
+      setPlayingTitle(null);
+    }
 
     void loadTitles(screen)
       .then((nextTitles) => {
         if (!cancelled) {
-          setTitles(nextTitles);
+          setTitles((currentTitles) => append ? mergeTitleCards(currentTitles, nextTitles) : nextTitles);
+          setHasMore(nextTitles.length >= pageSize);
+          listKeyRef.current = currentListKey;
         }
       })
       .catch((loadError) => {
         if (!cancelled) {
-          setTitles([]);
+          if (!append) {
+            setTitles([]);
+          }
           setError(loadError instanceof Error ? loadError.message : "Could not load titles.");
         }
       })
       .finally(() => {
         if (!cancelled) {
-          setLoading(false);
+          if (append) {
+            setLoadingMore(false);
+          } else {
+            setLoading(false);
+          }
         }
       });
 
@@ -73,6 +99,41 @@ export function BrowseApp() {
       cancelled = true;
     };
   }, [screen]);
+
+  useEffect(() => {
+    if (!isListScreen(screen) || loading || loadingMore || !hasMore) {
+      return;
+    }
+
+    const node = loadMoreRef.current;
+    if (!node) {
+      return;
+    }
+
+    const currentListKey = getListKey(screen);
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) {
+        return;
+      }
+
+      observer.disconnect();
+      setScreen((currentScreen) => {
+        if (!isListScreen(currentScreen) || getListKey(currentScreen) !== currentListKey) {
+          return currentScreen;
+        }
+
+        return {
+          ...currentScreen,
+          page: currentScreen.page + 1
+        };
+      });
+    }, {
+      rootMargin: "320px 0px"
+    });
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [screen, loading, loadingMore, hasMore, titles.length]);
 
   async function handleCardSelection(card: TitleCard) {
     setError(null);
@@ -236,19 +297,8 @@ export function BrowseApp() {
                 </button>
               ))}
             </div>
-
-            <div className="lv-pagination">
-              <ActionButton
-                label="Previous"
-                onClick={() => setScreen({ ...screen, page: Math.max(0, screen.page - 1) })}
-                disabled={screen.page === 0 || loading}
-              />
-              <ActionButton
-                label="Next"
-                onClick={() => setScreen({ ...screen, page: screen.page + 1 })}
-                disabled={loading || titles.length < pageSize}
-              />
-            </div>
+            {loadingMore ? <p className="lv-message lv-message-secondary">Loading more.</p> : null}
+            {hasMore ? <div ref={loadMoreRef} className="lv-load-more-sentinel" aria-hidden="true" /> : null}
           </section>
         ) : null}
       </section>
@@ -323,7 +373,7 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }> | Extract<
       offset: String(offset)
     }));
 
-    return response.items.map((season) => ({
+    return response.items.map((season: CatalogMediaListResponse["items"][number]) => ({
       id: season.id,
       title: formatSeasonTitle(season.title, season.seasonNumber ?? null),
       kind: "season"
@@ -337,7 +387,7 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }> | Extract<
       offset: String(offset)
     }));
 
-    return response.items.map((episode) => ({
+    return response.items.map((episode: CatalogMediaListResponse["items"][number]) => ({
       id: episode.id,
       title: formatEpisodeTitle(episode.title, episode.seasonNumber ?? null, episode.episodeNumber ?? null),
       kind: "item"
@@ -350,7 +400,7 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }> | Extract<
       limit: String((screen.page + 1) * pageSize)
     }));
 
-    return response.items.slice(offset, offset + pageSize).map((item) => ({
+    return response.items.slice(offset, offset + pageSize).map((item: CatalogLatestResponse["items"][number]) => ({
       id: item.id,
       title: screen.family === "movie"
         ? item.title
@@ -365,7 +415,7 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }> | Extract<
       limit: String((screen.page + 1) * pageSize)
     }));
 
-    return response.items.slice(offset, offset + pageSize).map((item) => ({
+    return response.items.slice(offset, offset + pageSize).map((item: CatalogRecentResponse["items"][number]) => ({
       id: item.id,
       title: item.title,
       kind: "item"
@@ -378,7 +428,7 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }> | Extract<
       limit: String((screen.page + 1) * pageSize)
     }));
 
-    return response.items.slice(offset, offset + pageSize).map((item) => ({
+    return response.items.slice(offset, offset + pageSize).map((item: CatalogRecentResponse["items"][number]) => ({
       id: item.id,
       title: formatShowItemTitle(item.showTitle, item.title),
       kind: "item"
@@ -405,7 +455,7 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }> | Extract<
     offset: String(offset)
   }));
 
-  return response.shows.map((show) => ({
+  return response.shows.map((show: CatalogShowListResponse["shows"][number]) => ({
     id: show.id,
     title: show.title,
     kind: "show"
@@ -470,6 +520,24 @@ function isChoiceScreen(screen: Screen): boolean {
 
 function isListScreen(screen: Screen): screen is Extract<Screen, { name: "titles" }> | Extract<Screen, { name: "seasons" }> | Extract<Screen, { name: "episodes" }> {
   return screen.name === "titles" || screen.name === "seasons" || screen.name === "episodes";
+}
+
+function getListKey(screen: Extract<Screen, { name: "titles" }> | Extract<Screen, { name: "seasons" }> | Extract<Screen, { name: "episodes" }>): string {
+  if (screen.name === "titles") {
+    return `titles:${screen.family}:${screen.mode}:${screen.letter ?? ""}`;
+  }
+
+  if (screen.name === "seasons") {
+    return `seasons:${screen.showId}`;
+  }
+
+  return `episodes:${screen.seasonId}`;
+}
+
+function mergeTitleCards(currentTitles: TitleCard[], nextTitles: TitleCard[]): TitleCard[] {
+  const seenIds = new Set(currentTitles.map((title) => title.id));
+  const appendedTitles = nextTitles.filter((title) => !seenIds.has(title.id));
+  return currentTitles.concat(appendedTitles);
 }
 
 function formatShowItemTitle(showTitle: string | null, title: string): string {

@@ -1,4 +1,4 @@
-const shellCache = "clawtv-shell-v2";
+const shellCache = "clawtv-shell-v3";
 const shellPaths = [
   "./",
   "./manifest.webmanifest",
