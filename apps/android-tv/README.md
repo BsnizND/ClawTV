@@ -27,7 +27,8 @@ For portable Shield demos, use your Tailscale-reachable ClawTV origin as the pri
 You can override that at build time:
 
 ```bash
-gradle -p apps/android-tv assembleDebug -PclawtvReceiverUrl=http://your-server:8787/ClawTV/
+cd apps/android-tv
+./gradlew app:assembleDebug -PclawtvReceiverUrl=http://your-server:8787/ClawTV/
 ```
 
 ## Voice Defaults
@@ -35,7 +36,8 @@ gradle -p apps/android-tv assembleDebug -PclawtvReceiverUrl=http://your-server:8
 The receiver can be built with generic voice defaults that are later overridden by the server:
 
 ```bash
-gradle -p apps/android-tv assembleDebug \
+cd apps/android-tv
+./gradlew app:assembleDebug \
   -PclawtvReceiverUrl=https://your-tailnet-host/ClawTV/ \
   -PclawtvReceiverFallbackUrls=https://your-tailnet-host/ClawTV/,http://your-lan-host:4390/ClawTV/ \
   -PclawtvVoiceAssistantName=Assistant \
@@ -49,6 +51,11 @@ Server-provided voice config can include cue audio URLs for processing, acknowle
 The receiver also remembers the last working receiver origin at runtime and can fail over across the configured receiver candidates, so LAN and Tailscale/HTTPS targets can coexist without rebuilding for every network change.
 
 ## Notes
+
+- `gradlew` and `gradle/wrapper/*` are checked into this repo so Android builds do not depend on a machine-global Gradle install
+- `local.properties` remains machine-local and should point at the local Android SDK path
+- if `local.properties` is missing, create it with a valid `sdk.dir=...` for that machine
+- from the repo root, the wrapper entrypoint is `apps/android-tv/gradlew`
 
 - the first Android TV scaffold started as a `WebView` shell
 - real Shield testing showed that native `Media3` playback is the reliable path for HLS on this project
