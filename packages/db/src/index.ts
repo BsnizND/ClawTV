@@ -24,6 +24,7 @@ import type {
   EpisodeRecommendation,
   ExternalLiveTvState,
   MediaItemSummary,
+  MediaLookupRequest,
   PlaybackMediaItem,
   PlaybackSnapshot,
   ReceiverCommandType,
@@ -1527,12 +1528,15 @@ export class ClawTvDatabase {
 
     if (input.commandName === "play" || input.commandName === "play-latest" || input.commandName === "shuffle") {
       const matchedItems = this.resolveMediaItems(input.commandName, input.payload);
+      const requestedMedia = describeMediaLookupRequest(parseMediaLookupRequest(input.payload));
 
       if (matchedItems.length === 0) {
         return this.finishCommand({
           commandName: input.commandName,
           acceptedAt,
-          message: "No matching media items were found in the local catalog. Run a Plex sync first or refine the request.",
+          message: requestedMedia
+            ? `No matching media items were found in the local catalog for ${requestedMedia}.`
+            : "No matching media items were found in the local catalog.",
           ok: false,
           playbackState: this.getQueueState(session.id).player_state,
           queueId: this.getQueueState(session.id).queue_id,
@@ -2805,10 +2809,57 @@ export class ClawTvDatabase {
   private resolveMediaItems(commandName: CommandName, payload: Record<string, unknown>): MediaItemSummary[] {
     if (commandName === "play") {
       const mediaItemId = String(payload.mediaItemId ?? "").trim();
-      const title = String(payload.title ?? "").trim();
+      const lookup = parseMediaLookupRequest(payload);
+      const title = lookup.title ?? "";
+      const show = lookup.show ?? "";
+      const episodeTitle = lookup.episodeTitle ?? (show ? lookup.title ?? "" : "");
 
       if (mediaItemId) {
         return this.lookupMediaItemsByIds([mediaItemId]);
+      }
+
+      if (show && episodeTitle) {
+        const structuredEpisodeMatches = this.db.prepare(`
+          SELECT
+            episode_mi.id,
+            episode_mi.title,
+            episode_mi.media_type,
+            show_mi.title AS show_title,
+            episode_mi.year,
+            episode_mi.originally_available_at,
+            season.season_number,
+            e.episode_number,
+            e.air_date
+          FROM episodes e
+          JOIN media_items episode_mi ON episode_mi.id = e.media_item_id
+          JOIN media_items show_mi ON show_mi.id = e.show_id
+          LEFT JOIN seasons season ON season.media_item_id = e.season_id
+          WHERE
+            (lower(show_mi.title) = lower(:show) OR lower(show_mi.title) LIKE lower(:showPattern))
+            AND (
+              lower(episode_mi.title) = lower(:episodeTitle)
+              OR lower(episode_mi.title) LIKE lower(:episodeTitlePattern)
+            )
+          ORDER BY
+            CASE
+              WHEN lower(show_mi.title) = lower(:show) AND lower(episode_mi.title) = lower(:episodeTitle) THEN 0
+              WHEN lower(show_mi.title) = lower(:show) THEN 1
+              ELSE 2
+            END,
+            COALESCE(e.air_date, episode_mi.originally_available_at, '') DESC,
+            episode_mi.title ASC
+          LIMIT 5
+        `).all({
+          show,
+          showPattern: `%${show}%`,
+          episodeTitle,
+          episodeTitlePattern: `%${episodeTitle}%`
+        }) as unknown as MediaRow[];
+
+        const playableStructuredMatches = this.expandPlayableMatches(structuredEpisodeMatches.map(mapMediaRow));
+        if (playableStructuredMatches.length > 0) {
+          return playableStructuredMatches;
+        }
       }
 
       if (!title) {
@@ -3169,7 +3220,7 @@ export class ClawTvDatabase {
           mediaItemId: item.id,
           position: index,
           originReason: input.commandName,
-          requestedTitle: String(input.payload.title ?? input.payload.series ?? input.payload.collection ?? ""),
+          requestedTitle: describeMediaLookupRequest(parseMediaLookupRequest(input.payload)),
           createdAt
         });
       });
@@ -3446,6 +3497,43 @@ function mapCollectionSummaryRow(row: CollectionSummaryRow): CatalogCollectionSu
     title: row.title,
     itemCount: row.item_count
   };
+}
+
+function parseMediaLookupRequest(payload: Record<string, unknown>): MediaLookupRequest {
+  return {
+    title: normalizeLookupString(payload.title),
+    series: normalizeLookupString(payload.series),
+    collection: normalizeLookupString(payload.collection),
+    date: normalizeLookupString(payload.date),
+    show: normalizeLookupString(payload.show),
+    episodeTitle: normalizeLookupString(payload.episodeTitle),
+    seasonNumber: normalizeLookupNumber(payload.seasonNumber),
+    episodeNumber: normalizeLookupNumber(payload.episodeNumber)
+  };
+}
+
+function describeMediaLookupRequest(request: MediaLookupRequest): string {
+  const show = request.show?.trim() ?? "";
+  const episodeTitle = request.episodeTitle?.trim() ?? "";
+
+  if (show && episodeTitle) {
+    return `${show}: ${episodeTitle}`;
+  }
+
+  return request.title
+    ?? request.series
+    ?? request.collection
+    ?? show
+    ?? "";
+}
+
+function normalizeLookupString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function normalizeLookupNumber(value: unknown): number | undefined {
+  const parsed = parseFiniteNumber(value);
+  return parsed === null ? undefined : parsed;
 }
 
 function mapPlaybackItemToMediaSummary(item: PlaybackMediaItem): MediaItemSummary {

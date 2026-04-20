@@ -208,6 +208,10 @@ export interface MediaLookupRequest {
   series?: string;
   collection?: string;
   date?: string;
+  show?: string;
+  episodeTitle?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
 }
 
 export interface CatalogSearchResponse {
