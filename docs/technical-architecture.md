@@ -158,6 +158,18 @@ That distinction matters:
 - the client can describe what happened locally
 - only the server and CLI are allowed to decide what should happen next
 
+### Web Shell Caching
+
+ClawTV should not depend on a cached web shell for correctness.
+
+Rules:
+
+- the browser entry points must stay network-fresh: HTML, `sw.js`, and `manifest.webmanifest` should be served `no-store`
+- only hashed assets in `apps/web/dist/assets/` should be long-lived and immutable
+- do not add a service worker that caches the app shell unless the cache invalidation story is proved end to end on iPad, TV browsers, and normal desktop reloads
+
+Architecturally, stale shell caching is not a performance enhancement here. It is a correctness risk, because it can hide freshly deployed accessibility and browse-layout fixes behind an old client shell.
+
 ## Proposed Runtime Layout
 
 Suggested logical modules:

@@ -178,3 +178,5 @@ The live-TV path is still intentionally simple: the server launches the external
 - [Technical Architecture](docs/technical-architecture.md)
 - [Deployment Notes](docs/deployment.md)
 - [Voice Roadmap](docs/voice-roadmap.md)
+
+If the web UI looks "stuck" after a deploy, start with the web cache rules in [Deployment Notes](docs/deployment.md#web-cache-rules) before assuming the rollout failed.
