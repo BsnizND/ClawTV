@@ -1046,7 +1046,7 @@ export class ClawTvDatabase {
       LEFT JOIN media_items show_mi ON show_mi.id = e.show_id
       WHERE (:mediaType IS NULL OR mi.media_type = :mediaType)
       ORDER BY
-        COALESCE(e.air_date, mi.originally_available_at, mi.added_at, mi.updated_at) DESC,
+        COALESCE(e.air_date, mi.originally_available_at) DESC,
         COALESCE(show_mi.title, mi.title) ASC,
         COALESCE(season.season_number, 0) DESC,
         COALESCE(e.episode_number, 0) DESC,
