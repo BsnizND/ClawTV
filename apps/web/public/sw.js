@@ -1,4 +1,4 @@
-const shellCache = "clawtv-shell-v1";
+const shellCache = "clawtv-shell-v2";
 const shellPaths = [
   "./",
   "./manifest.webmanifest",
@@ -32,8 +32,23 @@ self.addEventListener("fetch", (event) => {
   }
 
   const requestUrl = new URL(event.request.url);
+  const isNavigationRequest = event.request.mode === "navigate"
+    || event.request.headers.get("accept")?.includes("text/html");
 
   if (requestUrl.pathname.includes("/api/")) {
+    return;
+  }
+
+  if (isNavigationRequest) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          const cloned = response.clone();
+          void caches.open(shellCache).then((cache) => cache.put(event.request, cloned));
+          return response;
+        })
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("./")))
+    );
     return;
   }
 
