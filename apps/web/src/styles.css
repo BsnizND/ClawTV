@@ -49,7 +49,7 @@ button {
   min-height: 100vh;
   background: var(--lv-bg);
   color: var(--lv-fg);
-  padding: 4px 4px 8px;
+  padding: 3px 3px 6px;
 }
 
 .lv-stage {
@@ -68,7 +68,7 @@ button {
 .lv-heading {
   margin: 0;
   text-align: center;
-  font-size: clamp(5.2rem, 9.6vw, 8.4rem);
+  font-size: clamp(5.6rem, 10vw, 8.8rem);
   line-height: 1;
   font-weight: 900;
 }
@@ -76,7 +76,7 @@ button {
 .lv-message {
   margin: 0;
   text-align: center;
-  font-size: clamp(3.1rem, 4.9vw, 4.2rem);
+  font-size: clamp(3.4rem, 5.2vw, 4.6rem);
   line-height: 1.2;
 }
 
@@ -123,36 +123,36 @@ button {
 
 .lv-action-button {
   width: 100%;
-  padding: 26px 28px;
-  font-size: clamp(3.8rem, 6.2vw, 5.8rem);
+  padding: 24px 26px;
+  font-size: clamp(4.2rem, 6.6vw, 6.2rem);
   line-height: 1.08;
   text-align: left;
 }
 
 .lv-action-button-large {
-  min-height: 176px;
+  min-height: 170px;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 16px;
-  padding: 28px 30px;
-  font-size: clamp(4.8rem, 7.6vw, 7rem);
+  padding: 24px 26px;
+  font-size: clamp(5.3rem, 8vw, 7.6rem);
 }
 
 .lv-title-button {
   width: 100%;
-  min-height: 180px;
-  padding: 28px 30px;
+  min-height: 172px;
+  padding: 24px 26px;
   text-align: left;
-  font-size: clamp(5rem, 7vw, 6.8rem);
-  line-height: 1.04;
+  font-size: clamp(5.6rem, 7.5vw, 7.4rem);
+  line-height: 1.02;
 }
 
 .lv-back-button {
   min-height: 104px;
-  padding: 18px 24px;
+  padding: 16px 20px;
   justify-self: start;
-  font-size: clamp(3.2rem, 4.8vw, 3.9rem);
+  font-size: clamp(3.5rem, 5.1vw, 4.3rem);
 }
 
 .lv-icon-wrap {
@@ -288,7 +288,7 @@ button {
 
 @media (max-width: 900px) {
   .lv-shell {
-    padding-inline: 3px;
+    padding-inline: 2px;
   }
 
   .lv-choice-stack {
@@ -298,6 +298,37 @@ button {
   .lv-action-button,
   .lv-action-button-large,
   .lv-title-button {
-    min-height: 164px;
+    min-height: 160px;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1400px) {
+  .lv-heading {
+    font-size: clamp(6.2rem, 8.8vw, 9.4rem);
+  }
+
+  .lv-message {
+    font-size: clamp(3.8rem, 4.8vw, 5rem);
+  }
+
+  .lv-action-button {
+    font-size: clamp(4.8rem, 5.8vw, 6.8rem);
+  }
+
+  .lv-action-button-large {
+    min-height: 184px;
+    padding: 24px 24px;
+    font-size: clamp(6rem, 7vw, 8.4rem);
+  }
+
+  .lv-title-button {
+    min-height: 188px;
+    padding: 24px 24px;
+    font-size: clamp(6.2rem, 6.8vw, 8.6rem);
+    line-height: 1;
+  }
+
+  .lv-back-button {
+    font-size: clamp(3.8rem, 4.2vw, 4.8rem);
   }
 }
