@@ -319,6 +319,7 @@ export interface VoiceTurnHistoryEntry {
   finalReplyText: string;
   finalCommandName: string;
   finalPayload: Record<string, unknown>;
+  commandOk: boolean | null;
   commandMessage: string | null;
   createdAt: string;
 }
@@ -2131,14 +2132,14 @@ export class ClawTvDatabase {
   listRecentVoiceTurns(limit = 6, sessionId?: string | null): VoiceTurnHistoryEntry[] {
     const rows = (sessionId
       ? this.db.prepare(`
-          SELECT session_id, transcript, final_reply_text, final_command_name, final_payload_json, command_message, created_at
+          SELECT session_id, transcript, final_reply_text, final_command_name, final_payload_json, command_ok, command_message, created_at
           FROM voice_turn_log
           WHERE session_id = :sessionId
           ORDER BY created_at DESC
           LIMIT :limit
         `).all({ sessionId, limit })
       : this.db.prepare(`
-          SELECT session_id, transcript, final_reply_text, final_command_name, final_payload_json, command_message, created_at
+          SELECT session_id, transcript, final_reply_text, final_command_name, final_payload_json, command_ok, command_message, created_at
           FROM voice_turn_log
           ORDER BY created_at DESC
           LIMIT :limit
@@ -2148,6 +2149,7 @@ export class ClawTvDatabase {
           final_reply_text: string;
           final_command_name: string;
           final_payload_json: string;
+          command_ok: number | null;
           command_message: string | null;
           created_at: string;
         }>;
@@ -2160,6 +2162,7 @@ export class ClawTvDatabase {
         finalReplyText: row.final_reply_text,
         finalCommandName: row.final_command_name,
         finalPayload: safeParseJsonObject(row.final_payload_json),
+        commandOk: row.command_ok === null ? null : Boolean(row.command_ok),
         commandMessage: row.command_message,
         createdAt: row.created_at
       }));
@@ -2845,6 +2848,41 @@ export class ClawTvDatabase {
       const playableFuzzyMatches = this.expandPlayableMatches(fuzzyMatches.map(mapMediaRow));
       if (playableFuzzyMatches.length > 0) {
         return playableFuzzyMatches;
+      }
+
+      const compositeEpisodeMatches = this.db.prepare(`
+        SELECT
+          mi.id,
+          mi.title,
+          mi.media_type,
+          show_mi.title AS show_title,
+          mi.year,
+          mi.originally_available_at
+        FROM media_items mi
+        JOIN episodes e ON e.media_item_id = mi.id
+        JOIN media_items show_mi ON show_mi.id = e.show_id
+        WHERE
+          lower(show_mi.title || ': ' || mi.title) = lower(:title)
+          OR lower('the ' || show_mi.title || ' episode ' || mi.title) = lower(:title)
+          OR lower(show_mi.title || ': ' || mi.title) LIKE lower(:titlePattern)
+          OR lower('the ' || show_mi.title || ' episode ' || mi.title) LIKE lower(:titlePattern)
+        ORDER BY
+          CASE
+            WHEN lower(show_mi.title || ': ' || mi.title) = lower(:title) THEN 0
+            WHEN lower('the ' || show_mi.title || ' episode ' || mi.title) = lower(:title) THEN 1
+            ELSE 2
+          END,
+          COALESCE(mi.originally_available_at, '') DESC,
+          mi.title ASC
+        LIMIT 5
+      `).all({
+        title,
+        titlePattern: `%${title}%`
+      }) as unknown as MediaRow[];
+
+      const playableCompositeMatches = this.expandPlayableMatches(compositeEpisodeMatches.map(mapMediaRow));
+      if (playableCompositeMatches.length > 0) {
+        return playableCompositeMatches;
       }
 
       const summaryMatches = this.db.prepare(`

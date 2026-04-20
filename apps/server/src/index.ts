@@ -2202,19 +2202,19 @@ async function runOpenClawVoiceTurn(input: {
   rawReplyText?: string | null;
   executedAction?: VoiceDecision["executedAction"];
 } | null> {
-  const recentTurns = db.listRecentVoiceTurns(2, input.sessionId ?? input.playback.sessionId ?? null);
-  const prompt = buildOpenClawPrompt({
-    ...input,
-    recentTurns
-  });
   const conversationScope = input.sessionId ?? input.playback.sessionId ?? null;
-  const openClawTimeoutSeconds = Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90);
+  const sessionKey = makeOpenClawScopedSessionKey(input.voiceConfig.assistantId, "clawtv-voice", conversationScope);
+  const prompt = buildOpenClawPrompt(input);
+  const startedAtMs = Date.now();
+  const totalBudgetSeconds = resolveOpenClawTurnBudgetSeconds();
+  const fallbackReserveSeconds = resolveOpenClawFallbackReserveSeconds(totalBudgetSeconds);
+  const primaryTimeoutSeconds = Math.max(5, totalBudgetSeconds - fallbackReserveSeconds);
   const rawText = await runOpenClawJsonPrompt({
     prompt,
     agentId: input.voiceConfig.assistantId,
-    timeoutSeconds: openClawTimeoutSeconds,
+    timeoutSeconds: primaryTimeoutSeconds,
     thinking: getOpenClawThinking(),
-    sessionKey: makeOpenClawEphemeralSessionKey(input.voiceConfig.assistantId, "clawtv-voice", conversationScope)
+    sessionKey
   });
 
   if (rawText) {
@@ -2224,15 +2224,29 @@ async function runOpenClawVoiceTurn(input: {
     }
   }
 
+  const elapsedSeconds = Math.ceil((Date.now() - startedAtMs) / 1000);
+  const remainingSeconds = Math.max(0, totalBudgetSeconds - elapsedSeconds);
+  const fallbackTimeoutSeconds = Math.min(
+    remainingSeconds,
+    fallbackReserveSeconds > 0 ? fallbackReserveSeconds : remainingSeconds
+  );
+  if (fallbackTimeoutSeconds < 4) {
+    console.warn("Skipping OpenClaw voice fallback due to exhausted wall-clock budget.", {
+      agentId: input.voiceConfig.assistantId,
+      conversationScope,
+      totalBudgetSeconds,
+      primaryTimeoutSeconds,
+      elapsedSeconds
+    });
+    return null;
+  }
+
   const fallbackRawText = await runOpenClawPlainPrompt({
-    prompt: buildOpenClawFinalOnlyPrompt({
-      ...input,
-      recentTurns
-    }),
+    prompt: buildOpenClawFinalOnlyPrompt(input),
     agentId: input.voiceConfig.assistantId,
-    timeoutSeconds: openClawTimeoutSeconds,
+    timeoutSeconds: fallbackTimeoutSeconds,
     thinking: getOpenClawThinking(),
-    sessionKey: makeOpenClawEphemeralSessionKey(input.voiceConfig.assistantId, "clawtv-voice-fallback", conversationScope)
+    sessionKey
   });
   const finalFallback = fallbackRawText ? extractOpenClawReplyFromRawText(fallbackRawText) : null;
   return finalFallback;
@@ -2249,11 +2263,9 @@ function buildOpenClawPrompt(input: {
     promptStyle: "broad" | "recommendation" | "best-of";
   };
   recommendation?: CatalogRecommendationResponse;
-  recentTurns: ReturnType<typeof db.listRecentVoiceTurns>;
 }): string {
   const playbackSummary = describePlaybackContextForPrompt(input.playback);
   const externalLiveTvSummary = describeExternalLiveTvStateForPrompt(input.playback.externalLiveTv);
-  const recentTurnsSummary = describeRecentVoiceTurnsForPrompt(input.recentTurns);
 
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
@@ -2262,8 +2274,14 @@ function buildOpenClawPrompt(input: {
     "Keep replyText warm, concise, and human.",
     "Use the supplied Playback and Live TV state directly when it already answers the user.",
     "External live TV state is handoff memory, not live observation. Never say the user is definitely still on that channel or that you are watching it with them.",
-    "Use clawtv-control for authoritative ClawTV facts or actions. Never call clawtv-control voice-turn from inside this handoff.",
-    "If you change playback, subtitle state, or retune live TV, do it through clawtv-control before replying and set action to what you completed.",
+    "Use clawtv-control for authoritative ClawTV state questions or tool work you truly need inside this turn. Never call clawtv-control voice-turn from inside this handoff.",
+    "If the user explicitly asks to play, watch, put on, resume, or shuffle a specific title or episode, do not answer with action none. Return the matching playback action and let ClawTV resolve it.",
+    "For a direct request to play a named episode or movie, return action play with payload {\"title\":\"...\"} using the requested title, even when the title includes the show name.",
+    "Preserve meaningful title punctuation and separators in payload.title. If the user names a show plus episode, prefer the canonical '<Show>: <Episode>' title form over dropping the separator.",
+    "Example: if the user says 'play the Seinfeld episode The Contest', payload.title should be exactly 'Seinfeld: The Contest'.",
+    "Do not use clawtv-control just to pre-check whether a directly requested title exists. Let ClawTV resolve the requested title from the action payload.",
+    "Do not claim you cannot find a requested title unless you have actually attempted a tool lookup in this turn and the result really failed.",
+    "If you change subtitle state or retune live TV inside this turn, do it through clawtv-control before replying and set action to what you completed.",
     "If the user asks to resume a named title that is not the current item, use action resume with payload {\"title\":\"...\"}. ClawTV can resume saved title progress even when playback is currently idle.",
     "For shuffle, use payload {\"show\":\"...\"} when shuffling a show, {\"collection\":\"...\"} for a collection, or {\"network\":\"...\"} for a network.",
     "For exact receiver volume, use action set-volume with payload {\"percent\":number} where percent is 0 through 100.",
@@ -2281,7 +2299,6 @@ function buildOpenClawPrompt(input: {
     input.curatorIntent && input.recommendation
       ? `Recommendation context for ${input.curatorIntent.show}: ${describeRecommendationContextForPrompt(input.recommendation)}`
       : null,
-    recentTurnsSummary === "none" ? null : `Recent conversation context: ${recentTurnsSummary}`,
     `User said: ${input.transcript}`
   ].filter((value): value is string => Boolean(value)).join(" ");
 }
@@ -2347,7 +2364,6 @@ function buildOpenClawFinalOnlyPrompt(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
-  recentTurns: ReturnType<typeof db.listRecentVoiceTurns>;
 }): string {
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
@@ -2355,7 +2371,13 @@ function buildOpenClawFinalOnlyPrompt(input: {
     "Schema: {\"replyText\":\"string\",\"expectsReply\":boolean,\"action\":\"none|play|play-latest|shuffle|pause|resume|next|stop|subtitles-on|subtitles-off|live-tv-tune|set-volume|mute-volume|unmute-volume\",\"payload\":{},\"ok\":boolean}",
     "Keep the reply warm, concise, and direct.",
     "External live TV state is handoff memory, not live observation. Never say the user is definitely still on that channel or that you are watching it with them.",
-    "Use clawtv-control when you need authoritative ClawTV state or need to perform a ClawTV action. Never call clawtv-control voice-turn from inside this handoff.",
+    "Use clawtv-control when you need authoritative ClawTV state or tool work you truly need inside this turn. Never call clawtv-control voice-turn from inside this handoff.",
+    "If the user explicitly asks to play, watch, put on, resume, or shuffle a specific title or episode, do not answer with action none. Return the matching playback action and let ClawTV resolve it.",
+    "For a direct request to play a named episode or movie, return action play with payload {\"title\":\"...\"} using the requested title, even when the title includes the show name.",
+    "Preserve meaningful title punctuation and separators in payload.title. If the user names a show plus episode, prefer the canonical '<Show>: <Episode>' title form over dropping the separator.",
+    "Example: if the user says 'play the Seinfeld episode The Contest', payload.title should be exactly 'Seinfeld: The Contest'.",
+    "Do not use clawtv-control just to pre-check whether a directly requested title exists. Let ClawTV resolve the requested title from the action payload.",
+    "Do not claim you cannot find a requested title unless you have actually attempted a tool lookup in this turn and the result really failed.",
     "If the user asks to resume a named title that is not currently playing, use commandName resume with payload {\"title\":\"...\"}. ClawTV can resume saved title progress even while playback is idle.",
     "For shuffle, use payload {\"show\":\"...\"} when shuffling a show, {\"collection\":\"...\"} for a collection, or {\"network\":\"...\"} for a network.",
     "For exact receiver volume, use action set-volume with payload {\"percent\":number} where percent is 0 through 100.",
@@ -2363,14 +2385,11 @@ function buildOpenClawFinalOnlyPrompt(input: {
     input.playback.sessionId && sessionSupportsClientFeature(input.playback.sessionId, "local-audio-volume")
       ? "The active receiver supports exact local audio volume control right now. Do not refuse supported volume requests; use set-volume, mute-volume, or unmute-volume."
       : "The active receiver does not currently advertise exact local audio volume control.",
-    "Use the supplied state and recent conversation to resolve follow-ups like yes, the other one, switch to it, and go back.",
+    "Use the supplied state plus your native session context to resolve follow-ups like yes, the other one, switch to it, and go back.",
     "If external live TV is active, do not pretend ClawTV can pause or resume the YouTube TV app itself.",
     `Current playback context: ${describePlaybackContextForPrompt(input.playback)}`,
     `Current external live TV state: ${describeExternalLiveTvStateForPrompt(input.playback.externalLiveTv)}`,
     `Receiver capability state: ${describeReceiverCapabilitiesForPrompt(input.playback.sessionId ?? null)}`,
-    describeRecentVoiceTurnsForPrompt(input.recentTurns) === "none"
-      ? null
-      : `Recent conversation context: ${describeRecentVoiceTurnsForPrompt(input.recentTurns)}`,
     `User said: ${input.transcript}`
   ].filter((value): value is string => Boolean(value)).join(" ");
 }
@@ -2665,6 +2684,15 @@ function makeOpenClawEphemeralSessionKey(agentId: string, purpose: string, scope
   return `agent:${agentId}:${purpose}${scopePart}:${randomUUID()}`;
 }
 
+function makeOpenClawScopedSessionKey(agentId: string, purpose: string, scope?: string | null): string {
+  const normalizedScope = (scope ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const scopePart = normalizedScope.length > 0 ? `:${normalizedScope}` : ":default";
+  return `agent:${agentId}:${purpose}${scopePart}`;
+}
+
 async function runOpenClawReplyText(input: {
   prompt: string;
   agentId: string;
@@ -2676,7 +2704,7 @@ async function runOpenClawReplyText(input: {
     || "/Users/briansnyder/clawd/scripts/openclaw_native_session_turn.py";
   const agentId = process.env.CLAWTV_OPENCLAW_AGENT_ID?.trim() || input.agentId || "main";
   const timeoutSeconds = Number.isFinite(input.timeoutSeconds) ? input.timeoutSeconds : 90;
-  const sessionKey = input.sessionKey?.trim() || makeOpenClawEphemeralSessionKey(agentId, "clawtv");
+  const sessionKey = input.sessionKey?.trim() || makeOpenClawScopedSessionKey(agentId, "clawtv");
   const args = [
     bridgePath,
     "--agent-id",
@@ -2700,7 +2728,9 @@ async function runOpenClawReplyText(input: {
         ...process.env,
         PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
       },
-      maxBuffer: 8 * 1024 * 1024
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: Math.max(10_000, timeoutSeconds * 1000 + 5_000),
+      killSignal: "SIGKILL"
     });
     const payload = JSON.parse(stdout) as {
       status?: unknown;
@@ -2728,6 +2758,30 @@ function getOpenClawThinking(): string {
   return process.env.CLAWTV_OPENCLAW_THINKING?.trim() || "low";
 }
 
+function resolveOpenClawTimeoutSeconds(): number {
+  const raw = Number(process.env.CLAWTV_OPENCLAW_TIMEOUT_SECONDS ?? 90);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 90;
+  }
+  return Math.max(5, Math.round(raw));
+}
+
+function resolveOpenClawTurnBudgetSeconds(): number {
+  const raw = Number(process.env.CLAWTV_OPENCLAW_MAX_WALL_TIME_SECONDS ?? 45);
+  const configured = resolveOpenClawTimeoutSeconds();
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return Math.min(configured, 45);
+  }
+  return Math.max(5, Math.min(configured, Math.round(raw)));
+}
+
+function resolveOpenClawFallbackReserveSeconds(totalBudgetSeconds: number): number {
+  if (totalBudgetSeconds <= 8) {
+    return 0;
+  }
+  return Math.min(8, Math.max(4, Math.floor(totalBudgetSeconds / 3)));
+}
+
 function extractOpenClawRawText(stdout: string): string | null {
   try {
     const payload = JSON.parse(stdout) as {
@@ -2748,21 +2802,6 @@ function extractOpenClawRawText(stdout: string): string | null {
   } catch {
     return null;
   }
-}
-
-function describeRecentVoiceTurnsForPrompt(recentTurns: ReturnType<typeof db.listRecentVoiceTurns>): string {
-  if (recentTurns.length === 0) {
-    return "none";
-  }
-
-  return recentTurns
-    .map((turn) => {
-      const payloadSummary = Object.keys(turn.finalPayload).length > 0
-        ? ` payload=${summarizeRecentVoiceTurnPayload(turn.finalPayload)}`
-        : "";
-      return `U:${turn.transcript} | A:${turn.finalReplyText} | action=${turn.finalCommandName}${payloadSummary}`;
-    })
-    .join(" || ");
 }
 
 function summarizeRecentVoiceTurnPayload(payload: Record<string, unknown>): string {

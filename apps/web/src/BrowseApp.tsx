@@ -12,7 +12,7 @@ import type {
 
 import { resolveApiUrl } from "./api";
 
-const pageSize = 6;
+const pageSize = 3;
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 type MediaFamily = "movie" | "tv";
@@ -38,7 +38,6 @@ export function BrowseApp() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [playingTitle, setPlayingTitle] = useState<string | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const listKeyRef = useRef<string | null>(null);
 
@@ -66,7 +65,6 @@ export function BrowseApp() {
       setTitles([]);
       setLoading(true);
       setLoadingMore(false);
-      setPlayingTitle(null);
     }
 
     void loadTitles(screen)
@@ -137,7 +135,6 @@ export function BrowseApp() {
 
   async function handleCardSelection(card: TitleCard) {
     setError(null);
-    setPlayingTitle(null);
 
     if (card.kind === "show") {
       setScreen({
@@ -172,8 +169,6 @@ export function BrowseApp() {
       if (!result.ok) {
         throw new Error(result.message || "Could not start playback.");
       }
-
-      setPlayingTitle(card.title);
     } catch (playError) {
       setError(playError instanceof Error ? playError.message : "Could not start playback.");
     }
@@ -181,7 +176,6 @@ export function BrowseApp() {
 
   function goBack() {
     setError(null);
-    setPlayingTitle(null);
 
     if (screen.name === "home") {
       return;
@@ -226,51 +220,49 @@ export function BrowseApp() {
         {screen.name !== "home" ? <button type="button" className="lv-back-button" onClick={goBack}>Back</button> : null}
 
         {error ? <p className="lv-message lv-message-error">{error}</p> : null}
-        {playingTitle ? <p className="lv-message">Starting {playingTitle} on TV.</p> : null}
 
         {screen.name === "home" ? (
-          <section className="lv-split-grid">
+          <section className="lv-choice-stack">
             <ActionButton
               label="Movies"
-              icon="film"
-              split
+              large
               onClick={() => setScreen({ name: "family", family: "movie" })}
             />
             <ActionButton
               label="TV"
-              icon="tv"
-              split
+              large
               onClick={() => setScreen({ name: "family", family: "tv" })}
             />
           </section>
         ) : null}
 
         {screen.name === "family" ? (
-          <section className="lv-grid lv-family-grid">
+          <section className="lv-choice-stack">
             <ActionButton
               label={screen.family === "movie" ? "Latest Movies" : "Latest Episodes"}
-              split
+              large
               onClick={() => setScreen({ name: "titles", family: screen.family, mode: "latest", page: 0 })}
             />
             <ActionButton
               label={screen.family === "movie" ? "Recently Added Movies" : "Recently Added Episodes"}
-              split
+              large
               onClick={() => setScreen({ name: "titles", family: screen.family, mode: "recent", page: 0 })}
             />
             <ActionButton
               label="A-Z"
-              split
+              large
               onClick={() => setScreen({ name: "letters", family: screen.family })}
             />
           </section>
         ) : null}
 
         {screen.name === "letters" ? (
-          <section className="lv-grid lv-grid-letters">
+          <section className="lv-letter-list">
             {alphabet.map((letter) => (
               <ActionButton
                 key={letter}
                 label={letter}
+                large
                 onClick={() => setScreen({ name: "titles", family: screen.family, mode: "alphabet", letter, page: 0 })}
               />
             ))}
@@ -310,13 +302,13 @@ function ActionButton(input: {
   label: string;
   onClick: () => void;
   disabled?: boolean;
-  split?: boolean;
+  large?: boolean;
   icon?: "film" | "tv";
 }) {
   return (
     <button
       type="button"
-      className={`lv-action-button${input.split ? " lv-action-button-split" : ""}`}
+      className={`lv-action-button${input.large ? " lv-action-button-large" : ""}`}
       onClick={input.onClick}
       disabled={input.disabled}
     >

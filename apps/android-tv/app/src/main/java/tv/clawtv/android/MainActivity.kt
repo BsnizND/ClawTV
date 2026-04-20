@@ -1015,7 +1015,7 @@ class MainActivity : AppCompatActivity() {
                 Log.e(TAG, "Failed to complete voice turn", error)
                 runOnUiThread {
                     showVoiceOverlay(
-                        title = getString(R.string.voice_title_error),
+                        title = voiceProfile.assistantName,
                         message = voiceProfile.unavailableText,
                         transcript = transcript
                     )
