@@ -15,7 +15,7 @@ import { resolveApiUrl } from "./api";
 const pageSize = 3;
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
-type MediaFamily = "movie" | "tv";
+type MediaFamily = "movie" | "tv" | "youtube";
 type BrowseMode = "latest" | "recent" | "alphabet";
 type Screen =
   | { name: "home" }
@@ -229,9 +229,14 @@ export function BrowseApp() {
               onClick={() => setScreen({ name: "family", family: "movie" })}
             />
             <ActionButton
-              label="TV"
+              label="TV Shows"
               large
               onClick={() => setScreen({ name: "family", family: "tv" })}
+            />
+            <ActionButton
+              label="YouTube Videos"
+              large
+              onClick={() => setScreen({ name: "family", family: "youtube" })}
             />
           </section>
         ) : null}
@@ -239,12 +244,12 @@ export function BrowseApp() {
         {screen.name === "family" ? (
           <section className="lv-choice-stack">
             <ActionButton
-              label={screen.family === "movie" ? "Latest Movies" : "Latest Episodes"}
+              label={latestLabelForFamily(screen.family)}
               large
               onClick={() => setScreen({ name: "titles", family: screen.family, mode: "latest", page: 0 })}
             />
             <ActionButton
-              label={screen.family === "movie" ? "Recently Added Movies" : "Recently Added Episodes"}
+              label={recentLabelForFamily(screen.family)}
               large
               onClick={() => setScreen({ name: "titles", family: screen.family, mode: "recent", page: 0 })}
             />
@@ -329,7 +334,7 @@ function headingFor(screen: Screen): string {
   }
 
   if (screen.name === "family") {
-    return screen.family === "movie" ? "Movies" : "TV";
+    return familyHeading(screen.family);
   }
 
   if (screen.name === "letters") {
@@ -345,11 +350,11 @@ function headingFor(screen: Screen): string {
   }
 
   if (screen.mode === "latest") {
-    return screen.family === "movie" ? "Latest Movies" : "Latest Episodes";
+    return latestLabelForFamily(screen.family);
   }
 
   if (screen.mode === "recent") {
-    return screen.family === "movie" ? "Recently Added Movies" : "Recently Added Episodes";
+    return recentLabelForFamily(screen.family);
   }
 
   return screen.letter ?? "Titles";
@@ -388,22 +393,24 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }> | Extract<
 
   if (screen.mode === "latest") {
     const response = await getJson<CatalogLatestResponse>(withSearchParams("api/catalog/latest", {
-      type: screen.family === "movie" ? "movie" : "episode",
+      type: screen.family === "tv" ? "episode" : "movie",
+      movieLibraryScope: movieLibraryScopeForFamily(screen.family),
       limit: String((screen.page + 1) * pageSize)
     }));
 
     return response.items.slice(offset, offset + pageSize).map((item: CatalogLatestResponse["items"][number]) => ({
       id: item.id,
-      title: screen.family === "movie"
-        ? item.title
-        : formatShowItemTitle(item.showTitle, item.title),
+      title: screen.family === "tv"
+        ? formatShowItemTitle(item.showTitle, item.title)
+        : item.title,
       kind: "item"
     }));
   }
 
-  if (screen.family === "movie" && screen.mode === "recent") {
+  if ((screen.family === "movie" || screen.family === "youtube") && screen.mode === "recent") {
     const response = await getJson<CatalogRecentResponse>(withSearchParams("api/catalog/recently-added", {
       type: "movie",
+      movieLibraryScope: movieLibraryScopeForFamily(screen.family),
       limit: String((screen.page + 1) * pageSize)
     }));
 
@@ -427,9 +434,10 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }> | Extract<
     }));
   }
 
-  if (screen.family === "movie") {
+  if (screen.family === "movie" || screen.family === "youtube") {
     const response = await getJson<CatalogMovieListResponse>(withSearchParams("api/catalog/movies", {
       startsWith: screen.letter,
+      movieLibraryScope: movieLibraryScopeForFamily(screen.family),
       limit: String(pageSize),
       offset: String(offset)
     }));
@@ -452,6 +460,54 @@ async function loadTitles(screen: Extract<Screen, { name: "titles" }> | Extract<
     title: show.title,
     kind: "show"
   }));
+}
+
+function familyHeading(family: MediaFamily): string {
+  if (family === "movie") {
+    return "Movies";
+  }
+
+  if (family === "youtube") {
+    return "YouTube Videos";
+  }
+
+  return "TV Shows";
+}
+
+function latestLabelForFamily(family: MediaFamily): string {
+  if (family === "movie") {
+    return "Latest Movies";
+  }
+
+  if (family === "youtube") {
+    return "Latest Videos";
+  }
+
+  return "Latest Episodes";
+}
+
+function recentLabelForFamily(family: MediaFamily): string {
+  if (family === "movie") {
+    return "Recently Added Movies";
+  }
+
+  if (family === "youtube") {
+    return "Recently Added Videos";
+  }
+
+  return "Recently Added Episodes";
+}
+
+function movieLibraryScopeForFamily(family: MediaFamily): "exclude-youtube-videos" | "only-youtube-videos" | undefined {
+  if (family === "movie") {
+    return "exclude-youtube-videos";
+  }
+
+  if (family === "youtube") {
+    return "only-youtube-videos";
+  }
+
+  return undefined;
 }
 
 async function getJson<T>(path: string): Promise<T> {

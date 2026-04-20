@@ -657,10 +657,12 @@ const server = createServer(async (request, response) => {
     const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
     const offset = parseCatalogOffset(requestUrl.searchParams.get("offset"));
     const startsWith = requestUrl.searchParams.get("startsWith");
+    const movieLibraryScope = parseMovieLibraryScope(requestUrl.searchParams.get("movieLibraryScope"));
     sendJson(response, 200, db.listMovies({
       limit,
       offset,
-      startsWith
+      startsWith,
+      movieLibraryScope
     }) satisfies CatalogMovieListResponse);
     return;
   }
@@ -707,9 +709,11 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && routePath === "/api/catalog/recently-added") {
     const mediaType = parseCatalogMediaType(requestUrl.searchParams.get("type"));
     const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
+    const movieLibraryScope = parseMovieLibraryScope(requestUrl.searchParams.get("movieLibraryScope"));
     sendJson(response, 200, db.listRecentlyAdded({
       mediaType,
-      limit
+      limit,
+      movieLibraryScope
     }));
     return;
   }
@@ -717,9 +721,11 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && routePath === "/api/catalog/latest") {
     const mediaType = parseCatalogMediaType(requestUrl.searchParams.get("type"));
     const limit = parseCatalogLimit(requestUrl.searchParams.get("limit"));
+    const movieLibraryScope = parseMovieLibraryScope(requestUrl.searchParams.get("movieLibraryScope"));
     sendJson(response, 200, db.listLatest({
       mediaType,
-      limit
+      limit,
+      movieLibraryScope
     }) satisfies CatalogLatestResponse);
     return;
   }
@@ -1284,6 +1290,12 @@ function parseCatalogLimit(value: string | null): number | undefined {
   }
 
   return parsed;
+}
+
+function parseMovieLibraryScope(value: string | null): "exclude-youtube-videos" | "only-youtube-videos" | undefined {
+  return value === "exclude-youtube-videos" || value === "only-youtube-videos"
+    ? value
+    : undefined;
 }
 
 function parseCatalogOffset(value: string | null): number | undefined {

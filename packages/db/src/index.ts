@@ -87,6 +87,8 @@ export interface CatalogCollectionRecord {
   mediaItemIds: string[];
 }
 
+type MovieLibraryScope = "exclude-youtube-videos" | "only-youtube-videos";
+
 export interface CatalogMediaItemTagRecord {
   mediaItemId: string;
   tagType: "network";
@@ -839,8 +841,10 @@ export class ClawTvDatabase {
     limit?: number;
     offset?: number;
     startsWith?: string | null;
+    movieLibraryScope?: MovieLibraryScope | null;
   }): CatalogMovieListResponse {
     const startsWith = normalizeStartsWithFilter(input?.startsWith);
+    const movieLibraryScope = normalizeMovieLibraryScope(input?.movieLibraryScope);
     const rows = this.db.prepare(`
       SELECT
         mi.id,
@@ -848,12 +852,19 @@ export class ClawTvDatabase {
         mi.year
       FROM movies m
       JOIN media_items mi ON mi.id = m.media_item_id
+      LEFT JOIN libraries l ON l.id = mi.library_id
       WHERE (:startsWith IS NULL OR upper(substr(mi.title, 1, 1)) = :startsWith)
+        AND (
+          :movieLibraryScope IS NULL
+          OR (:movieLibraryScope = 'exclude-youtube-videos' AND lower(COALESCE(l.name, '')) != 'youtube videos')
+          OR (:movieLibraryScope = 'only-youtube-videos' AND lower(COALESCE(l.name, '')) = 'youtube videos')
+        )
       ORDER BY mi.title ASC, COALESCE(mi.year, 0) DESC
       LIMIT :limit
       OFFSET :offset
     `).all({
       startsWith,
+      movieLibraryScope,
       limit: clampCatalogLimit(input?.limit),
       offset: clampCatalogOffset(input?.offset)
     }) as unknown as MovieSummaryRow[];
@@ -1057,9 +1068,13 @@ export class ClawTvDatabase {
   listRecentlyAdded(input?: {
     mediaType?: CatalogMediaTypeFilter;
     limit?: number;
+    movieLibraryScope?: MovieLibraryScope | null;
   }): CatalogRecentResponse {
     const mediaType = input?.mediaType ?? "any";
     const mediaTypeFilter = mediaType === "any" ? null : mediaType;
+    const movieLibraryScope = mediaType === "movie"
+      ? normalizeMovieLibraryScope(input?.movieLibraryScope)
+      : null;
     const rows = this.db.prepare(`
       SELECT
         mi.id,
@@ -1075,15 +1090,22 @@ export class ClawTvDatabase {
         mi.audience_rating,
         mi.critic_rating
       FROM media_items mi
+      LEFT JOIN libraries l ON l.id = mi.library_id
       LEFT JOIN episodes e ON e.media_item_id = mi.id
       LEFT JOIN media_items show_mi ON show_mi.id = e.show_id
       WHERE (:mediaType IS NULL OR mi.media_type = :mediaType)
+        AND (
+          :movieLibraryScope IS NULL
+          OR (:movieLibraryScope = 'exclude-youtube-videos' AND lower(COALESCE(l.name, '')) != 'youtube videos')
+          OR (:movieLibraryScope = 'only-youtube-videos' AND lower(COALESCE(l.name, '')) = 'youtube videos')
+        )
       ORDER BY
         COALESCE(mi.added_at, mi.updated_at, mi.originally_available_at) DESC,
         mi.title ASC
       LIMIT :limit
     `).all({
       mediaType: mediaTypeFilter,
+      movieLibraryScope,
       limit: clampCatalogLimit(input?.limit)
     }) as unknown as MediaRow[];
 
@@ -1096,9 +1118,13 @@ export class ClawTvDatabase {
   listLatest(input?: {
     mediaType?: CatalogMediaTypeFilter;
     limit?: number;
+    movieLibraryScope?: MovieLibraryScope | null;
   }): CatalogLatestResponse {
     const mediaType = input?.mediaType ?? "any";
     const mediaTypeFilter = mediaType === "any" ? null : mediaType;
+    const movieLibraryScope = mediaType === "movie"
+      ? normalizeMovieLibraryScope(input?.movieLibraryScope)
+      : null;
     const rows = this.db.prepare(`
       SELECT
         mi.id,
@@ -1117,10 +1143,16 @@ export class ClawTvDatabase {
         e.episode_number,
         e.air_date
       FROM media_items mi
+      LEFT JOIN libraries l ON l.id = mi.library_id
       LEFT JOIN episodes e ON e.media_item_id = mi.id
       LEFT JOIN seasons season ON season.media_item_id = e.season_id
       LEFT JOIN media_items show_mi ON show_mi.id = e.show_id
       WHERE (:mediaType IS NULL OR mi.media_type = :mediaType)
+        AND (
+          :movieLibraryScope IS NULL
+          OR (:movieLibraryScope = 'exclude-youtube-videos' AND lower(COALESCE(l.name, '')) != 'youtube videos')
+          OR (:movieLibraryScope = 'only-youtube-videos' AND lower(COALESCE(l.name, '')) = 'youtube videos')
+        )
       ORDER BY
         COALESCE(e.air_date, mi.originally_available_at) DESC,
         COALESCE(show_mi.title, mi.title) ASC,
@@ -1130,6 +1162,7 @@ export class ClawTvDatabase {
       LIMIT :limit
     `).all({
       mediaType: mediaTypeFilter,
+      movieLibraryScope,
       limit: clampCatalogLimit(input?.limit)
     }) as unknown as MediaRow[];
 
@@ -3773,6 +3806,12 @@ function normalizeStartsWithFilter(value: string | null | undefined): string | n
   }
 
   return /^[A-Z]$/u.test(trimmed) ? trimmed : null;
+}
+
+function normalizeMovieLibraryScope(value: MovieLibraryScope | null | undefined): MovieLibraryScope | null {
+  return value === "exclude-youtube-videos" || value === "only-youtube-videos"
+    ? value
+    : null;
 }
 
 function normalizeSearchText(value: string): string {

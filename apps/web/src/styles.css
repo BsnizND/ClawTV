@@ -123,11 +123,11 @@ button {
 
 .lv-title-button {
   width: 100%;
-  min-height: 176px;
-  padding: 34px 34px;
+  min-height: 196px;
+  padding: 38px 38px;
   text-align: left;
-  font-size: clamp(3.5rem, 5.6vw, 5rem);
-  line-height: 1.14;
+  font-size: clamp(4.2rem, 6.2vw, 5.8rem);
+  line-height: 1.1;
 }
 
 .lv-back-button {
@@ -280,6 +280,6 @@ button {
   .lv-action-button,
   .lv-action-button-large,
   .lv-title-button {
-    min-height: 152px;
+    min-height: 172px;
   }
 }
