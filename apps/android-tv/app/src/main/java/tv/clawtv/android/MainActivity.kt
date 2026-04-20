@@ -414,6 +414,8 @@ class MainActivity : AppCompatActivity() {
             || keyCode == KeyEvent.KEYCODE_MEDIA_STOP
             || keyCode == KeyEvent.KEYCODE_DPAD_LEFT
             || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+            || (supportsLocalAudioVolume() && keyCode == KeyEvent.KEYCODE_DPAD_UP)
+            || (supportsLocalAudioVolume() && keyCode == KeyEvent.KEYCODE_DPAD_DOWN)
     }
 
     private fun isVoiceKey(keyCode: Int): Boolean {
@@ -489,8 +491,60 @@ class MainActivity : AppCompatActivity() {
                 put("deltaMs", -SEEK_BACK_MS)
             })
 
+            KeyEvent.KEYCODE_DPAD_UP -> adjustLocalAudioVolume(VOLUME_STEP_PERCENT)
+            KeyEvent.KEYCODE_DPAD_DOWN -> adjustLocalAudioVolume(-VOLUME_STEP_PERCENT)
+
             KeyEvent.KEYCODE_MEDIA_NEXT -> sendCommand("next")
             KeyEvent.KEYCODE_MEDIA_STOP -> sendCommand("stop")
+        }
+    }
+
+    private fun adjustLocalAudioVolume(deltaPercent: Int) {
+        worker.execute {
+            val sonosTarget = resolveSonosControlBaseUrl()
+            if (sonosTarget == null) {
+                Log.e(TAG, "Rejecting DPAD volume step because no Sonos control target is configured.")
+                runOnUiThread {
+                    showTemporaryPlaybackMessage(
+                        title = getString(R.string.status_error_title),
+                        message = getString(R.string.status_volume_unavailable_message)
+                    )
+                }
+                return@execute
+            }
+
+            val currentPercent = getSonosGroupVolume(sonosTarget)
+            if (currentPercent == null) {
+                Log.e(TAG, "Rejecting DPAD volume step because current Sonos volume could not be read.")
+                runOnUiThread {
+                    showTemporaryPlaybackMessage(
+                        title = getString(R.string.status_error_title),
+                        message = getString(R.string.status_volume_read_failed_message)
+                    )
+                }
+                return@execute
+            }
+
+            val nextPercent = (currentPercent + deltaPercent).coerceIn(0, 100)
+            val handled = if (nextPercent == currentPercent) {
+                true
+            } else {
+                setSonosGroupVolume(sonosTarget, nextPercent)
+            }
+
+            runOnUiThread {
+                if (handled) {
+                    showTemporaryPlaybackMessage(
+                        title = getString(R.string.status_volume_title, nextPercent),
+                        message = ""
+                    )
+                } else {
+                    showTemporaryPlaybackMessage(
+                        title = getString(R.string.status_error_title),
+                        message = getString(R.string.status_volume_set_failed_message)
+                    )
+                }
+            }
         }
     }
 
@@ -1549,6 +1603,27 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun getSonosGroupVolume(baseUrl: String): Int? {
+        Log.i(TAG, "Reading Sonos group volume baseUrl=$baseUrl")
+        val responseBody = sendSonosSoap(
+            baseUrl = baseUrl,
+            controlPath = "/MediaRenderer/RenderingControl/Control",
+            soapAction = "urn:schemas-upnp-org:service:RenderingControl:1#GetVolume",
+            body = """
+                <u:GetVolume xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1">
+                  <InstanceID>0</InstanceID>
+                  <Channel>Master</Channel>
+                </u:GetVolume>
+            """.trimIndent()
+        ) ?: return null
+
+        return SONOS_CURRENT_VOLUME_REGEX.find(responseBody)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?.coerceIn(0, 100)
+    }
+
     private fun setSonosGroupMute(baseUrl: String, muted: Boolean): Boolean {
         val desiredMute = if (muted) 1 else 0
         Log.i(TAG, "Setting Sonos group mute baseUrl=$baseUrl muted=$muted")
@@ -1567,6 +1642,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun postSonosSoap(baseUrl: String, controlPath: String, soapAction: String, body: String): Boolean {
+        return sendSonosSoap(baseUrl, controlPath, soapAction, body) != null
+    }
+
+    private fun sendSonosSoap(baseUrl: String, controlPath: String, soapAction: String, body: String): String? {
         val envelope = buildString {
             append("""<?xml version="1.0" encoding="utf-8"?>""")
             append('\n')
@@ -1599,13 +1678,30 @@ class MainActivity : AppCompatActivity() {
                     connection.errorStream?.bufferedReader()?.use { it.readText() }
                 }.getOrNull()
                 Log.w(TAG, "Sonos SOAP call $soapAction returned HTTP $responseCode body=${errorBody ?: "<none>"}")
+                null
             } else {
+                val responseBody = connection.inputStream.bufferedReader().use { it.readText() }
                 Log.i(TAG, "Sonos SOAP call $soapAction succeeded with HTTP $responseCode")
+                responseBody
             }
-            responseCode in 200..299
         }.onFailure { error ->
             Log.w(TAG, "Sonos SOAP call failed for $soapAction", error)
-        }.getOrDefault(false)
+        }.getOrNull()
+    }
+
+    private fun showTemporaryPlaybackMessage(title: String, message: String, durationMs: Long = VOLUME_OVERLAY_LINGER_MS) {
+        showOverlay(
+            title = title,
+            message = message,
+            mode = OverlayMode.PLAYBACK,
+            visible = true
+        )
+
+        mainHandler.postDelayed({
+            if (!voiceModeActive) {
+                showOverlay(visible = false)
+            }
+        }, durationMs)
     }
 
     private fun fetchText(url: String): String? {
@@ -2008,8 +2104,11 @@ class MainActivity : AppCompatActivity() {
         private const val VOICE_MINIMUM_LISTEN_MS = 3_500L
         private const val SEEK_BACK_MS = 10_000
         private const val SEEK_FORWARD_MS = 30_000
+        private const val VOLUME_STEP_PERCENT = 5
+        private const val VOLUME_OVERLAY_LINGER_MS = 1_000L
         private val LOCATION_HEADER_REGEX = Regex("^location:\\s*(.+)$", setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE))
         private val XML_ROOM_NAME_REGEX = Regex("<roomName>(.*?)</roomName>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+        private val SONOS_CURRENT_VOLUME_REGEX = Regex("<CurrentVolume>(\\d+)</CurrentVolume>", setOf(RegexOption.IGNORE_CASE))
 
         private fun playbackStateLabel(playbackState: Int): String {
             return when (playbackState) {

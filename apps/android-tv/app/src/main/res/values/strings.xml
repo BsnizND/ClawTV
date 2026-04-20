@@ -13,6 +13,10 @@
     <string name="status_finished_message"></string>
     <string name="status_error_title">Error</string>
     <string name="status_error_message">Can’t play this right now.</string>
+    <string name="status_volume_title">Volume %1$d%%</string>
+    <string name="status_volume_unavailable_message">Sonos volume control isn’t configured on this receiver.</string>
+    <string name="status_volume_read_failed_message">Couldn’t read the current Sonos volume.</string>
+    <string name="status_volume_set_failed_message">Couldn’t change the Sonos volume.</string>
     <string name="status_restoring_title">ClawTV</string>
     <string name="status_restoring_message"></string>
     <string name="voice_brand_default">Assistant Voice</string>
