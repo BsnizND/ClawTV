@@ -158,3 +158,8 @@ The long-term `POST /api/voice/turn` response should support:
 5. Add greeting/processing variation packs and caching.
 
 This keeps the Android TV app stable while the server grows into the real live assistant loop.
+
+## Current Runtime Routing
+
+The live `snizserver` runtime keeps Kay as the ClawTV voice persona with `CLAWTV_VOICE_ASSISTANT_NAME=Kay`, but routes OpenClaw handoff through the existing `jay-handoff-worker` agent id. Do not add a separate Kay/OpenClaw worker registration for ClawTV without Brian approval; future topology work should migrate this to the final approved Worker id.
+

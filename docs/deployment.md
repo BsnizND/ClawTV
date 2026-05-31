@@ -24,6 +24,8 @@ The server serves the app and API under `/ClawTV` by default.
 - LaunchAgent: `/Users/briansnyder/Library/LaunchAgents/com.clawtv.server.plist`
 - deployed program path: `/Volumes/LaCie_6big/briansnyder/repos/ClawTV/scripts/runtime/launch_server.mjs`
 - logs: `/Volumes/LaCie_6big/briansnyder/logs/ClawTV/server.stdout.log` and `/Volumes/LaCie_6big/briansnyder/logs/ClawTV/server.stderr.log`
+- voice persona: `CLAWTV_VOICE_ASSISTANT_NAME=Kay`
+- current OpenClaw voice route: `CLAWTV_VOICE_ASSISTANT_ID=jay-handoff-worker` and `CLAWTV_OPENCLAW_AGENT_ID=jay-handoff-worker`; this keeps Kay as the TV persona while using the existing Worker lane instead of a separate Kay agent registration
 - configure `CLAWTV_ANDROID_TV_ADB_TARGETS` with tailnet-first and LAN-fallback Shield targets when you need live TV launches to survive network changes
 
 ## Local Data
