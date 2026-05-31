@@ -26,6 +26,7 @@ The server serves the app and API under `/ClawTV` by default.
 - logs: `/Volumes/LaCie_6big/briansnyder/logs/ClawTV/server.stdout.log` and `/Volumes/LaCie_6big/briansnyder/logs/ClawTV/server.stderr.log`
 - voice persona: `CLAWTV_VOICE_ASSISTANT_NAME=Kay`
 - current OpenClaw voice route: `CLAWTV_VOICE_ASSISTANT_ID=jay-worker` and `CLAWTV_OPENCLAW_AGENT_ID=jay-worker`; this keeps Kay as the TV persona while using the approved Worker lane instead of a separate Kay agent registration
+- voice history prompt window: `CLAWTV_VOICE_HISTORY_PROMPT_LIMIT=6` recent turns, `CLAWTV_VOICE_HISTORY_MAX_AGE_MINUTES=15`
 - configure `CLAWTV_ANDROID_TV_ADB_TARGETS` with tailnet-first and LAN-fallback Shield targets when you need live TV launches to survive network changes
 - live-TV ADB commands fail fast by default: `CLAWTV_ANDROID_TV_ADB_CONNECT_TIMEOUT_MS=3000` for `adb connect`, and `CLAWTV_ANDROID_TV_ADB_COMMAND_TIMEOUT_MS=5000` for other ADB commands
 
@@ -89,3 +90,14 @@ Expected shape:
 
 - HTML / service worker / manifest: `cache-control: no-store, max-age=0`
 - hashed JS/CSS assets: `cache-control: public, max-age=31536000, immutable`
+
+## Voice Observability
+
+Use the same server endpoint for human and agent checks:
+
+```bash
+curl -s http://127.0.0.1:4390/ClawTV/api/voice/history?limit=20
+CLAWTV_SERVER_ORIGIN=http://127.0.0.1:4390/ClawTV/ pnpm --filter @clawtv/cli dev voice-history --limit 20
+```
+
+The response includes recent voice turns plus in-memory counters for total turns, failures, average duration, and OpenClaw fallback attempts/uses. The counters reset on server restart; the recent turn log is persisted in SQLite.

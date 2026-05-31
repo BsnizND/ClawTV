@@ -22,6 +22,7 @@ import type {
   SyncRequest,
   SyncRunSummary,
   VoiceConfig,
+  VoiceHistoryResponse,
   VoiceTurnRequest,
   VoiceTurnResponse
 } from "@clawtv/contracts";
@@ -64,6 +65,16 @@ async function main(): Promise<void> {
     if (rawCommand === "voice-config") {
       const config = await getJson<VoiceConfig>("api/voice/config");
       console.log(JSON.stringify(config, null, 2));
+      return;
+    }
+
+    if (rawCommand === "voice-history") {
+      const payload = parseKeyValueFlags(restArgs);
+      const history = await getJson<VoiceHistoryResponse>(withSearchParams("api/voice/history", {
+        limit: payload.limit,
+        sessionId: payload["session-id"] ?? payload.sessionId
+      }));
+      console.log(JSON.stringify(history, null, 2));
       return;
     }
 
@@ -244,6 +255,7 @@ Usage:
   clawtv now-playing-summary
   clawtv live-tv-channels
   clawtv voice-config
+  clawtv voice-history [--limit 20] [--session-id tv-main]
   clawtv voice-turn --text "how long is left in this?"
   clawtv search --query "john oliver" [--type episode]
   clawtv list-shows [--limit 20]

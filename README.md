@@ -102,6 +102,7 @@ export ELEVENLABS_CUE_CACHE_VERSION=
 pnpm --filter @clawtv/cli dev now-playing
 pnpm --filter @clawtv/cli dev now-playing-summary
 pnpm --filter @clawtv/cli dev voice-config
+pnpm --filter @clawtv/cli dev voice-history --limit 20
 pnpm --filter @clawtv/cli dev voice-turn --text "how long is left in this?"
 pnpm --filter @clawtv/cli dev check-new-content
 pnpm --filter @clawtv/cli dev search --query "john oliver" --type episode

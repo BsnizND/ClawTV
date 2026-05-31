@@ -318,6 +318,47 @@ export interface VoiceHealthResponse {
   error: string | null;
 }
 
+export interface VoiceTurnHistoryEntry {
+  sessionId: string | null;
+  transcript: string;
+  finalReplyText: string;
+  finalCommandName: string;
+  finalPayload: Record<string, unknown>;
+  commandOk: boolean | null;
+  commandMessage: string | null;
+  createdAt: string;
+}
+
+export interface VoiceRuntimeMetrics {
+  turnCount: number;
+  okCount: number;
+  failedCount: number;
+  fallbackAttemptCount: number;
+  fallbackUsedCount: number;
+  totalDurationMs: number;
+  averageDurationMs: number | null;
+  lastTurnAt: string | null;
+  lastDurationMs: number | null;
+  lastError: string | null;
+}
+
+export interface VoiceHistoryResponse {
+  turns: VoiceTurnHistoryEntry[];
+  metrics: VoiceRuntimeMetrics;
+}
+
+export interface VoiceTurnTelemetry {
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  openClawPrimaryDurationMs: number | null;
+  openClawFallbackAttempted: boolean;
+  openClawFallbackUsed: boolean;
+  openClawFallbackDurationMs: number | null;
+  openClawFallbackReason: string | null;
+  timeoutBudgetSeconds: number | null;
+}
+
 export interface SyncRequest {
   mode: SyncMode;
   library?: string;
@@ -400,4 +441,5 @@ export interface VoiceTurnResponse {
   resumePlayback: boolean;
   action: VoiceActionName;
   playback: PlaybackSnapshot;
+  telemetry: VoiceTurnTelemetry;
 }

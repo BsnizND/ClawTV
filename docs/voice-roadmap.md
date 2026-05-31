@@ -17,7 +17,11 @@ What is implemented now:
 - Android TV build-time voice defaults
 - server-side `GET /api/voice/config`
 - server-side `POST /api/voice/turn`
+- server-side `GET /api/voice/history?limit=20`
 - OpenClaw CLI handoff support for conversational turns
+- short-lived server-provided recent turn history in the OpenClaw voice prompt
+- turn telemetry on every voice response, including wall-clock duration and OpenClaw fallback state
+- in-memory voice runtime counters exposed through the voice history endpoint
 - server-served cue packs loaded from `assets/voice/<pack>/...`
 - mock voice intent handling for:
   - what is playing
@@ -28,13 +32,13 @@ What is implemented now:
   - resume
   - next
   - stop
-- CLI support for `voice-config` and `voice-turn`
+- CLI support for `voice-config`, `voice-turn`, and `voice-history`
 - OpenClaw skill docs for the same voice API
 
 What is not implemented yet:
 
 - live validation of the ElevenLabs reply-audio path with production credentials
-- live conversational session memory on the ClawTV server
+- live Shield/ADB validation of receiver voice capture and TV-side playback of replies
 
 ## Phase 1
 
@@ -132,11 +136,12 @@ Current endpoints:
 
 - `GET /api/voice/config`
 - `POST /api/voice/turn`
+- `GET /api/voice/history?limit=20`
 
 Likely next additions:
 
 - `GET /api/voice/audio/:turnId`
-- `GET /api/voice/history?limit=20`
+- persisted voice observability rollups across server restarts
 
 The long-term `POST /api/voice/turn` response should support:
 
@@ -148,6 +153,7 @@ The long-term `POST /api/voice/turn` response should support:
 - structured playback action
 - updated playback snapshot
 - whether playback should resume after the turn
+- voice turn telemetry for timeout/fallback auditing
 
 ## Recommended Deployment Order
 

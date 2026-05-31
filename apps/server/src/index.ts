@@ -26,8 +26,11 @@ import type {
   PlaybackSnapshot,
   ReceiverClientFeature,
   VoiceConfig,
+  VoiceHistoryResponse,
+  VoiceRuntimeMetrics,
   VoiceTurnRequest,
   VoiceTurnResponse,
+  VoiceTurnTelemetry,
   PlaybackStateUpdateRequest,
   RecommendationStrategy,
   SyncMode,
@@ -211,6 +214,7 @@ type VoiceDecision = {
   payload: Record<string, unknown>;
   expectsReply: boolean;
   rawReplyText?: string | null;
+  telemetry?: Partial<VoiceTurnTelemetry> | null;
   executedAction?: {
     action: VoiceTurnResponse["action"];
     payload: Record<string, unknown>;
@@ -231,6 +235,19 @@ type AgentToolOutcome = {
   arguments: Record<string, unknown>;
   result: unknown;
   executedAction?: NonNullable<VoiceDecision["executedAction"]>;
+};
+
+const voiceRuntimeMetrics: VoiceRuntimeMetrics = {
+  turnCount: 0,
+  okCount: 0,
+  failedCount: 0,
+  fallbackAttemptCount: 0,
+  fallbackUsedCount: 0,
+  totalDurationMs: 0,
+  averageDurationMs: null,
+  lastTurnAt: null,
+  lastDurationMs: null,
+  lastError: null
 };
 
 mkdirSync(voiceCacheDir, { recursive: true });
@@ -313,6 +330,18 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "GET" && routePath === "/api/voice/config") {
     sendJson(response, 200, await buildVoiceConfig());
+    return;
+  }
+
+  if (request.method === "GET" && routePath === "/api/voice/history") {
+    const sessionId = requestUrl.searchParams.get("sessionId");
+    sendJson(response, 200, {
+      turns: db.listRecentVoiceTurns(
+        parseVoiceHistoryLimit(requestUrl.searchParams.get("limit")),
+        typeof sessionId === "string" && sessionId.trim().length > 0 ? sessionId.trim() : null
+      ),
+      metrics: buildVoiceRuntimeMetrics()
+    } satisfies VoiceHistoryResponse);
     return;
   }
 
@@ -994,6 +1023,39 @@ function buildSyncStatusResponse(): SyncStatusResponse {
   };
 }
 
+function buildVoiceRuntimeMetrics(): VoiceRuntimeMetrics {
+  return {
+    ...voiceRuntimeMetrics
+  };
+}
+
+function recordVoiceRuntimeMetrics(input: {
+  ok: boolean;
+  telemetry: VoiceTurnTelemetry;
+  error: string | null;
+}): void {
+  voiceRuntimeMetrics.turnCount += 1;
+  voiceRuntimeMetrics.totalDurationMs += input.telemetry.durationMs;
+  voiceRuntimeMetrics.averageDurationMs = Math.round(voiceRuntimeMetrics.totalDurationMs / voiceRuntimeMetrics.turnCount);
+  voiceRuntimeMetrics.lastTurnAt = input.telemetry.finishedAt;
+  voiceRuntimeMetrics.lastDurationMs = input.telemetry.durationMs;
+  voiceRuntimeMetrics.lastError = input.ok ? null : input.error;
+
+  if (input.ok) {
+    voiceRuntimeMetrics.okCount += 1;
+  } else {
+    voiceRuntimeMetrics.failedCount += 1;
+  }
+
+  if (input.telemetry.openClawFallbackAttempted) {
+    voiceRuntimeMetrics.fallbackAttemptCount += 1;
+  }
+
+  if (input.telemetry.openClawFallbackUsed) {
+    voiceRuntimeMetrics.fallbackUsedCount += 1;
+  }
+}
+
 function summarizeCatalogSyncPayload(payload: {
   libraries: Array<{ id: string }>;
   mediaItems: Array<{ id: string; mediaType: string; libraryId: string }>;
@@ -1297,6 +1359,20 @@ function parseCatalogLimit(value: string | null): number | undefined {
   }
 
   return parsed;
+}
+
+function parseVoiceHistoryLimit(value: string | null): number {
+  if (!value) {
+    return 20;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return 20;
+  }
+
+  return Math.max(1, Math.min(50, Math.trunc(parsed)));
 }
 
 function parseMovieLibraryScope(value: string | null): "exclude-youtube-videos" | "only-youtube-videos" | undefined {
@@ -1900,6 +1976,8 @@ async function buildVoiceConfig(): Promise<VoiceConfig> {
 }
 
 async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: VoiceConfig): Promise<VoiceTurnResponse> {
+  const turnStartedAtMs = Date.now();
+  const turnStartedAt = new Date(turnStartedAtMs).toISOString();
   const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
   const playbackBefore = buildPlaybackSnapshot();
   const sessionId = typeof body.sessionId === "string" ? body.sessionId : playbackBefore.sessionId;
@@ -1919,6 +1997,7 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
   let commandOk: boolean | null = null;
   let commandMessage: string | null = null;
   let matchedItemCount: number | null = null;
+  let decisionTelemetry: Partial<VoiceTurnTelemetry> | null = null;
 
   if (!transcript) {
     replyText = "I didn't catch that. Please try again.";
@@ -1934,6 +2013,7 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
     expectsReply = decision.expectsReply;
     ok = decision.ok;
     rawDecision = decision;
+    decisionTelemetry = decision.telemetry ?? null;
 
     if (decision.executedAction) {
       action = decision.executedAction.action;
@@ -1969,6 +2049,18 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
   const playbackAfter = buildPlaybackSnapshot();
   const replyAudioUrl = await synthesizeVoiceReplyAudio(replyText);
   const replyMode = replyAudioUrl ? "server-audio" : voiceConfig.replyMode;
+  const turnFinishedAtMs = Date.now();
+  const telemetry: VoiceTurnTelemetry = {
+    startedAt: turnStartedAt,
+    finishedAt: new Date(turnFinishedAtMs).toISOString(),
+    durationMs: turnFinishedAtMs - turnStartedAtMs,
+    openClawPrimaryDurationMs: decisionTelemetry?.openClawPrimaryDurationMs ?? null,
+    openClawFallbackAttempted: decisionTelemetry?.openClawFallbackAttempted ?? false,
+    openClawFallbackUsed: decisionTelemetry?.openClawFallbackUsed ?? false,
+    openClawFallbackDurationMs: decisionTelemetry?.openClawFallbackDurationMs ?? null,
+    openClawFallbackReason: decisionTelemetry?.openClawFallbackReason ?? null,
+    timeoutBudgetSeconds: decisionTelemetry?.timeoutBudgetSeconds ?? null
+  };
   db.recordVoiceTurn({
     sessionId: sessionId ?? playbackAfter.sessionId,
     transcript,
@@ -1982,6 +2074,11 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
     commandOk,
     commandMessage,
     matchedItemCount
+  });
+  recordVoiceRuntimeMetrics({
+    ok,
+    telemetry,
+    error: ok ? null : commandMessage ?? replyText
   });
 
   return {
@@ -2006,7 +2103,8 @@ async function buildVoiceTurnResponse(body: VoiceTurnRequest, voiceConfig: Voice
     expectsReply,
     resumePlayback: !expectsReply && action === "none" && shouldResumeOriginalPlayback,
     action,
-    playback: playbackAfter
+    playback: playbackAfter,
+    telemetry
   };
 }
 
@@ -2264,6 +2362,7 @@ async function runOpenClawVoiceTurn(input: {
   payload: Record<string, unknown>;
   expectsReply: boolean;
   rawReplyText?: string | null;
+  telemetry?: Partial<VoiceTurnTelemetry> | null;
   executedAction?: VoiceDecision["executedAction"];
 } | null> {
   const conversationScope = input.sessionId ?? input.playback.sessionId ?? null;
@@ -2273,6 +2372,7 @@ async function runOpenClawVoiceTurn(input: {
   const totalBudgetSeconds = resolveOpenClawTurnBudgetSeconds();
   const fallbackReserveSeconds = resolveOpenClawFallbackReserveSeconds(totalBudgetSeconds);
   const primaryTimeoutSeconds = Math.max(5, totalBudgetSeconds - fallbackReserveSeconds);
+  const primaryStartedAtMs = Date.now();
   const rawText = await runOpenClawJsonPrompt({
     prompt,
     agentId: input.voiceConfig.assistantId,
@@ -2280,11 +2380,22 @@ async function runOpenClawVoiceTurn(input: {
     thinking: getOpenClawThinking(),
     sessionKey
   });
+  const primaryDurationMs = Date.now() - primaryStartedAtMs;
 
   if (rawText) {
     const parsed = extractOpenClawReplyFromRawText(rawText);
     if (parsed) {
-      return parsed;
+      return {
+        ...parsed,
+        telemetry: {
+          openClawPrimaryDurationMs: primaryDurationMs,
+          openClawFallbackAttempted: false,
+          openClawFallbackUsed: false,
+          openClawFallbackDurationMs: null,
+          openClawFallbackReason: null,
+          timeoutBudgetSeconds: totalBudgetSeconds
+        }
+      };
     }
   }
 
@@ -2302,9 +2413,24 @@ async function runOpenClawVoiceTurn(input: {
       primaryTimeoutSeconds,
       elapsedSeconds
     });
-    return null;
+    return {
+      ok: false,
+      replyText: input.voiceConfig.unavailableText,
+      commandName: "none",
+      payload: {},
+      expectsReply: false,
+      telemetry: {
+        openClawPrimaryDurationMs: primaryDurationMs,
+        openClawFallbackAttempted: false,
+        openClawFallbackUsed: false,
+        openClawFallbackDurationMs: null,
+        openClawFallbackReason: rawText ? "primary-json-parse-failed" : "primary-no-reply",
+        timeoutBudgetSeconds: totalBudgetSeconds
+      }
+    };
   }
 
+  const fallbackStartedAtMs = Date.now();
   const fallbackRawText = await runOpenClawPlainPrompt({
     prompt: buildOpenClawFinalOnlyPrompt(input),
     agentId: input.voiceConfig.assistantId,
@@ -2312,8 +2438,37 @@ async function runOpenClawVoiceTurn(input: {
     thinking: getOpenClawThinking(),
     sessionKey
   });
+  const fallbackDurationMs = Date.now() - fallbackStartedAtMs;
   const finalFallback = fallbackRawText ? extractOpenClawReplyFromRawText(fallbackRawText) : null;
-  return finalFallback;
+  if (finalFallback) {
+    return {
+      ...finalFallback,
+      telemetry: {
+        openClawPrimaryDurationMs: primaryDurationMs,
+        openClawFallbackAttempted: true,
+        openClawFallbackUsed: true,
+        openClawFallbackDurationMs: fallbackDurationMs,
+        openClawFallbackReason: rawText ? "primary-json-parse-failed" : "primary-no-reply",
+        timeoutBudgetSeconds: totalBudgetSeconds
+      }
+    };
+  }
+
+  return {
+    ok: false,
+    replyText: input.voiceConfig.unavailableText,
+    commandName: "none",
+    payload: {},
+    expectsReply: false,
+    telemetry: {
+      openClawPrimaryDurationMs: primaryDurationMs,
+      openClawFallbackAttempted: true,
+      openClawFallbackUsed: false,
+      openClawFallbackDurationMs: fallbackDurationMs,
+      openClawFallbackReason: rawText ? "primary-json-parse-failed" : "primary-no-reply",
+      timeoutBudgetSeconds: totalBudgetSeconds
+    }
+  };
 }
 
 function buildOpenClawPrompt(input: {
@@ -2360,6 +2515,7 @@ function buildOpenClawPrompt(input: {
     `Current external live TV state: ${externalLiveTvSummary}`,
     `Receiver capability state: ${describeReceiverCapabilitiesForPrompt(input.sessionId ?? input.playback.sessionId ?? null)}`,
     `Last ClawTV-tuned live TV state: ${describeLastLiveTvTuneForPrompt()}`,
+    `Recent voice session history: ${describeRecentVoiceHistoryForPrompt(input.sessionId ?? input.playback.sessionId ?? null)}`,
     input.curatorIntent && input.recommendation
       ? `Recommendation context for ${input.curatorIntent.show}: ${describeRecommendationContextForPrompt(input.recommendation)}`
       : null,
@@ -2428,6 +2584,7 @@ function buildOpenClawFinalOnlyPrompt(input: {
   transcript: string;
   playback: PlaybackSnapshot & { diagnostics?: PlaybackDiagnostics | null };
   voiceConfig: VoiceConfig;
+  sessionId?: string | null;
 }): string {
   return [
     `You are ${input.voiceConfig.assistantName}, the voice assistant for ClawTV on a television.`,
@@ -2454,6 +2611,7 @@ function buildOpenClawFinalOnlyPrompt(input: {
     `Current playback context: ${describePlaybackContextForPrompt(input.playback)}`,
     `Current external live TV state: ${describeExternalLiveTvStateForPrompt(input.playback.externalLiveTv)}`,
     `Receiver capability state: ${describeReceiverCapabilitiesForPrompt(input.playback.sessionId ?? null)}`,
+    `Recent voice session history: ${describeRecentVoiceHistoryForPrompt(input.sessionId ?? input.playback.sessionId ?? null)}`,
     `User said: ${input.transcript}`
   ].filter((value): value is string => Boolean(value)).join(" ");
 }
@@ -2468,6 +2626,36 @@ function describeReceiverCapabilitiesForPrompt(sessionId: string | null): string
     `external launches ${sessionSupportsClientFeature(sessionId, "launch-external-url") ? "supported" : "not supported"}`,
     `exact local audio volume ${sessionSupportsClientFeature(sessionId, "local-audio-volume") ? "supported" : "not supported"}`
   ].join(" | ");
+}
+
+function describeRecentVoiceHistoryForPrompt(sessionId: string | null): string {
+  const history = db
+    .listRecentVoiceTurns(readPositiveIntegerEnv("CLAWTV_VOICE_HISTORY_PROMPT_LIMIT", 6), sessionId)
+    .filter((entry) => isVoiceHistoryEntryFresh(entry.createdAt));
+
+  if (history.length === 0) {
+    return "No recent voice turns in this session.";
+  }
+
+  return history
+    .map((entry) => {
+      const command = entry.finalCommandName === "none"
+        ? "answered"
+        : `action ${entry.finalCommandName}`;
+      return `User: ${entry.transcript} / Kay: ${entry.finalReplyText} / ${command}`;
+    })
+    .join(" || ");
+}
+
+function isVoiceHistoryEntryFresh(createdAt: string): boolean {
+  const createdAtMs = Date.parse(createdAt);
+
+  if (!Number.isFinite(createdAtMs)) {
+    return false;
+  }
+
+  const maxAgeMs = readPositiveIntegerEnv("CLAWTV_VOICE_HISTORY_MAX_AGE_MINUTES", 15) * 60 * 1000;
+  return Date.now() - createdAtMs <= maxAgeMs;
 }
 
 function extractOpenClawReplyFromRawText(rawText: string): {
