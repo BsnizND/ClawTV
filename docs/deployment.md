@@ -16,9 +16,14 @@ The server serves the app and API under `/ClawTV` by default.
 ## Current Runtime Defaults
 
 - `CLAWTV_BASE_PATH=/ClawTV`
-- `CLAWTV_SERVER_ORIGIN=http://localhost:8787/ClawTV/`
+- deployed local server: `http://127.0.0.1:4390/`
+- deployed tailnet route: `https://snizserver.barred-komodo.ts.net/ClawTV/`
+- approved Funnel exception: `https://snizserver.barred-komodo.ts.net:8443/ClawTV/`
 - `PLEX_BASE_URL=http://127.0.0.1:32400/`
-- default server port: `8787` for development
+- deployed server port: `4390`; development can override `PORT` as needed
+- LaunchAgent: `/Users/briansnyder/Library/LaunchAgents/com.clawtv.server.plist`
+- deployed program path: `/Volumes/LaCie_6big/briansnyder/repos/ClawTV/scripts/runtime/launch_server.mjs`
+- logs: `/Volumes/LaCie_6big/briansnyder/logs/ClawTV/server.stdout.log` and `/Volumes/LaCie_6big/briansnyder/logs/ClawTV/server.stderr.log`
 - configure `CLAWTV_ANDROID_TV_ADB_TARGETS` with tailnet-first and LAN-fallback Shield targets when you need live TV launches to survive network changes
 
 ## Local Data
@@ -71,10 +76,10 @@ Why this is strict:
 Verification commands:
 
 ```bash
-curl -sD - -o /dev/null http://127.0.0.1:8787/ClawTV/
-curl -sD - -o /dev/null http://127.0.0.1:8787/ClawTV/sw.js
-curl -sD - -o /dev/null http://127.0.0.1:8787/ClawTV/manifest.webmanifest
-curl -sD - -o /dev/null http://127.0.0.1:8787/ClawTV/assets/<hashed-file>.js
+curl -sD - -o /dev/null https://snizserver.barred-komodo.ts.net/ClawTV/
+curl -sD - -o /dev/null https://snizserver.barred-komodo.ts.net/ClawTV/sw.js
+curl -sD - -o /dev/null https://snizserver.barred-komodo.ts.net/ClawTV/manifest.webmanifest
+curl -sD - -o /dev/null https://snizserver.barred-komodo.ts.net/ClawTV/assets/<hashed-file>.js
 ```
 
 Expected shape:

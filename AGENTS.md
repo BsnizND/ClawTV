@@ -2,7 +2,8 @@
 
 ## Source of truth
 - Durable ClawTV repo on `snizserver`: `/Volumes/LaCie_6big/briansnyder/repos/ClawTV`.
-- Live service URL on `snizserver`: `http://127.0.0.1:4390/ClawTV/`.
+- Live server on `snizserver`: `http://127.0.0.1:4390/` locally; Tailscale Serve exposes `/ClawTV` on `https://snizserver.barred-komodo.ts.net/ClawTV/` and the approved Funnel exception at `https://snizserver.barred-komodo.ts.net:8443/ClawTV/`.
+- LaunchAgent on `snizserver`: `/Users/briansnyder/Library/LaunchAgents/com.clawtv.server.plist`, running `/Volumes/LaCie_6big/briansnyder/repos/ClawTV/scripts/runtime/launch_server.mjs`.
 - First log surfaces on `snizserver`: `/Volumes/LaCie_6big/briansnyder/logs/ClawTV/server.stdout.log` and `/Volumes/LaCie_6big/briansnyder/logs/ClawTV/server.stderr.log`.
 
 ## Storage posture
