@@ -161,5 +161,4 @@ This keeps the Android TV app stable while the server grows into the real live a
 
 ## Current Runtime Routing
 
-The live `snizserver` runtime keeps Kay as the ClawTV voice persona with `CLAWTV_VOICE_ASSISTANT_NAME=Kay`, but routes OpenClaw handoff through the existing `jay-handoff-worker` agent id. Do not add a separate Kay/OpenClaw worker registration for ClawTV without Brian approval; future topology work should migrate this to the final approved Worker id.
-
+The live `snizserver` runtime keeps Kay as the ClawTV voice persona with `CLAWTV_VOICE_ASSISTANT_NAME=Kay`, but routes OpenClaw handoff through the approved `jay-worker` agent id. Do not add a separate Kay/OpenClaw worker registration for ClawTV without Brian approval.
