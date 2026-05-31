@@ -1772,22 +1772,67 @@ async function launchLiveTvViaAdb(input: {
 }
 
 async function runAdbCommand(adbPath: string, args: string[]): Promise<void> {
+  const timeoutMs = resolveAdbCommandTimeoutMs(args);
+
   try {
-    await execFileAsync(adbPath, args);
+    await execFileAsync(adbPath, args, {
+      timeout: timeoutMs,
+      killSignal: "SIGKILL"
+    });
   } catch (error) {
     const message = error instanceof Error
       ? error.message
       : "ADB command failed.";
-    throw new Error(`${message} Command: ${adbPath} ${args.join(" ")}`);
+    const timeoutDetail = isTimedOutProcessError(error)
+      ? ` ADB command timed out after ${timeoutMs}ms.`
+      : "";
+    throw new Error(`${message}${timeoutDetail} Command: ${adbPath} ${args.join(" ")}`);
   }
 }
 
 async function runAdbCommandBestEffort(adbPath: string, args: string[]): Promise<void> {
   try {
-    await execFileAsync(adbPath, args);
+    await execFileAsync(adbPath, args, {
+      timeout: resolveAdbCommandTimeoutMs(args),
+      killSignal: "SIGKILL"
+    });
   } catch {
     // Best-effort cleanup commands should not block recovery.
   }
+}
+
+function resolveAdbCommandTimeoutMs(args: string[]): number {
+  if (args[0] === "connect") {
+    return readPositiveIntegerEnv("CLAWTV_ANDROID_TV_ADB_CONNECT_TIMEOUT_MS", 3_000);
+  }
+
+  return readPositiveIntegerEnv("CLAWTV_ANDROID_TV_ADB_COMMAND_TIMEOUT_MS", 5_000);
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.round(parsed)
+    : fallback;
+}
+
+function isTimedOutProcessError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const candidate = error as Error & { killed?: boolean; signal?: string | null; code?: string | number | null };
+  return candidate.killed === true
+    || candidate.signal === "SIGTERM"
+    || candidate.signal === "SIGKILL"
+    || candidate.code === "ETIMEDOUT"
+    || /timed out/iu.test(candidate.message);
 }
 
 function resolveConfiguredAdbTargets(): string[] {
