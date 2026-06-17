@@ -2331,12 +2331,12 @@ async function buildCuratorConversationReply(input: {
     .join(", ");
 
   const followUp = input.intent.promptStyle === "best-of"
-    ? "I can go with one of those, or I can narrow it by vibe. Want something cozy, chaotic, or all-timer?"
-    : "I can narrow it by vibe if you want. Want something cozy, chaotic, or all-timer?";
+    ? "I can start one of those, or you can give me a mood and I will use the assistant path to narrow it."
+    : "I can start one of those, or you can give me more context and I will use the assistant path to narrow it.";
 
   return {
     ok: true,
-    replyText: `A few good ${recommendation.show} picks: ${picks}. ${followUp}`,
+    replyText: `A few catalog-ranked ${recommendation.show} options: ${picks}. ${followUp}`,
     commandName: "none",
     payload: {},
     expectsReply: true
@@ -2517,7 +2517,11 @@ function buildOpenClawPrompt(input: {
     `Last ClawTV-tuned live TV state: ${describeLastLiveTvTuneForPrompt()}`,
     `Recent voice session history: ${describeRecentVoiceHistoryForPrompt(input.sessionId ?? input.playback.sessionId ?? null)}`,
     input.curatorIntent && input.recommendation
-      ? `Recommendation context for ${input.curatorIntent.show}: ${describeRecommendationContextForPrompt(input.recommendation)}`
+      ? [
+          `Catalog-ranked evidence for ${input.curatorIntent.show}: ${describeRecommendationContextForPrompt(input.recommendation)}`,
+          `Ranking basis: ${input.recommendation.rankingBasis}; personalization level: ${input.recommendation.personalizationLevel}.`,
+          "These rows are deterministic catalog evidence, not final personal taste judgment. Use your judgment and the user's wording before calling anything a recommendation."
+        ].join(" ")
       : null,
     `User said: ${input.transcript}`
   ].filter((value): value is string => Boolean(value)).join(" ");
@@ -2533,7 +2537,8 @@ function describeRecommendationContextForPrompt(input: CatalogRecommendationResp
         : "unwatched";
       const lastViewed = entry.item.lastViewedAt ? `last viewed ${entry.item.lastViewedAt}` : "not recently viewed";
       const ratingText = typeof rating === "number" && rating > 0 ? `rating ${formatRating(rating)}` : "no rating";
-      return `${formatRecommendationTitle(entry)} [${watchState}; ${lastViewed}; ${ratingText}] because ${entry.reason}`;
+      const signals = entry.signals.length > 0 ? `signals ${entry.signals.join(", ")}` : "signals unavailable";
+      return `${formatRecommendationTitle(entry)} [${watchState}; ${lastViewed}; ${ratingText}; ${signals}] because ${entry.reason}`;
     })
     .join(" | ");
 }

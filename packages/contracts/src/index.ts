@@ -281,11 +281,14 @@ export type CatalogLatestResponse = CatalogMediaListResponse;
 export interface EpisodeRecommendation {
   item: MediaItemSummary;
   reason: string;
+  signals: string[];
 }
 
 export interface CatalogRecommendationResponse {
   show: string;
   strategy: RecommendationStrategy;
+  rankingBasis: "catalog_heuristic";
+  personalizationLevel: "catalog_history_only";
   items: EpisodeRecommendation[];
 }
 

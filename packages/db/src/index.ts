@@ -1185,6 +1185,8 @@ export class ClawTvDatabase {
       return {
         show,
         strategy,
+        rankingBasis: "catalog_heuristic",
+        personalizationLevel: "catalog_history_only",
         items: []
       };
     }
@@ -1194,6 +1196,8 @@ export class ClawTvDatabase {
       return {
         show,
         strategy,
+        rankingBasis: "catalog_heuristic",
+        personalizationLevel: "catalog_history_only",
         items: []
       };
     }
@@ -1256,9 +1260,12 @@ export class ClawTvDatabase {
     return {
       show: resolvedShow.title,
       strategy,
+      rankingBasis: "catalog_heuristic",
+      personalizationLevel: "catalog_history_only",
       items: rankedRows.map((row) => ({
         item: mapMediaRow(row),
-        reason: buildRecommendationReason(row, strategy)
+        reason: buildRecommendationReason(row, strategy),
+        signals: buildRecommendationSignals(row, strategy)
       }))
     };
   }
@@ -3619,18 +3626,38 @@ function buildRecommendationReason(row: MediaRow, strategy: RecommendationStrate
   }
 
   if (viewCount === 0) {
-    return "A strong place to start that you have not watched yet.";
+    return "Catalog-ranked because it has not been watched yet.";
   }
 
   if (!row.last_viewed_at) {
-    return "A solid episode pick from the show.";
+    return "Catalog-ranked from the show rotation.";
   }
 
   if (daysSinceViewed !== null && daysSinceViewed >= 365) {
-    return "A good fit based on what you have watched and what has been sitting a long while.";
+    return "Catalog-ranked because it has been out of rotation for a long while.";
   }
 
-  return "A good fit based on what you have watched and what has been sitting a while.";
+  return "Catalog-ranked because it has been out of rotation for a while.";
+}
+
+function buildRecommendationSignals(row: MediaRow, strategy: RecommendationStrategy): string[] {
+  const rating = row.user_rating ?? row.audience_rating ?? row.critic_rating;
+  const viewCount = row.view_count ?? 0;
+  const daysSinceViewed = daysSinceIsoString(row.last_viewed_at);
+  const signals = [
+    `strategy:${strategy}`,
+    viewCount > 0 ? `watch_count:${viewCount}` : "unwatched",
+    row.last_viewed_at ? `last_viewed_at:${row.last_viewed_at}` : "last_viewed_at:none"
+  ];
+
+  if (typeof rating === "number" && rating > 0) {
+    signals.push(`rating:${formatRating(rating)}`);
+  }
+  if (daysSinceViewed !== null) {
+    signals.push(`days_since_viewed:${daysSinceViewed}`);
+  }
+
+  return signals;
 }
 
 function scoreRecommendationRow(
